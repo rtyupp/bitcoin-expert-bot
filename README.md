@@ -53,6 +53,47 @@
 ### 4) (اختياري) الذكاء الاصطناعي
 أضف `DEEPSEEK_API_KEY` في Environment → أعد النشر → استخدم `/ai`.
 
+## ☁️ النشر المجاني الدائم: Oracle Cloud (البديل الأقوى)
+
+Oracle Cloud Always Free يعطي **خادم VPS حقيقي دائم — بدون نوم وبدون انتهاء صلاحية**: 2 نواة ARM + 12GB رام + 200GB قرص، مدى الحياة. البوت يشتغل عليه 24/7 بوضع polling مع إعادة تشغيل تلقائية.
+
+### الخطوات
+1. سجّل في [oracle.com/cloud/free](https://www.oracle.com/cloud/free) (تطلب بطاقة للتحقق فقط — **لا تُخصم أي مبالغ**)
+2. أنشئ VM: **Compute → Instances → Create**:
+   - الصورة: **Ubuntu 22.04 أو 24.04**
+   - الشكل (Shape): **VM.Standard.A1.Flex** — 2 OCPU / 12GB (هذا المجاني الدائم)
+   - نزّل مفتاح SSH الخاص
+3. في **Virtual Cloud Network → Security List**: افتح منفذ **22** فقط (البوت polling — لا يحتاج منافذ دخول أخرى)
+4. اتصل بالخادم:
+   ```bash
+   ssh -i ~/Downloads/ssh-key.key ubuntu@IP_الخادم
+   ```
+5. شغّل سكربت التثبيت التلقائي (ينزّل البوت، يثبّت الاعتماديات، وينشئ خدمة systemd):
+   ```bash
+   curl -s https://raw.githubusercontent.com/rtyupp/bitcoin-expert-bot/main/deploy/oracle/setup.sh -o setup.sh
+   sudo bash setup.sh 123456:توكن_البوت_هنا
+   ```
+   اختياري للتنبيه اليومي والذكاء الاصطناعي:
+   ```bash
+   DAILY_CHAT_ID=رقم_المحادثة DEEPSEEK_API_KEY=sk-... sudo -E bash setup.sh 123456:التوكن
+   ```
+6. خلاص ✅ — البوت يعمل على مدار الساعة، ويعيد تشغيل نفسه تلقائياً لو انقطع.
+   - السجلات: `journalctl -u bitcoin-expert-bot -f`
+   - التحديث لاحقاً: `cd /opt/bitcoin-expert-bot && git pull && sudo systemctl restart bitcoin-expert-bot`
+
+### مقارنة البدائل المجانية (مُتحقق منها أكتوبر 2026)
+
+| المنصة | مجاني فعلاً؟ | ملاحظات |
+|---|---|---|
+| **Oracle Always Free** | ✅ دائم | الأقوى — خادم كامل 24/7، بطاقة للتحقق فقط |
+| Google Cloud Run | ✅ ضمن حد مجاني سخي | دفع لكل استدعاء، يحتاج بطاقة فوترة |
+| Koyeb | ⚠️ نظرياً | بطاقة + حجز $29 + الحساب يبدأ بخطة $29/شهر |
+| Railway | ⚠️ $5 للتحقق + $5/شهر رصيد | ينتهي الرصيد تتوقف الخدمة |
+| Fly.io / Heroku | ❌ | الطبقة المجانية أُلغيت |
+| PythonAnywhere | ❌ للبوتات | لا يدعم مهام دائمة في المجاني |
+
+> المنصات السحابية المدعومة بـ Dockerfile (Cloud Run, Koyeb): فعّل وضع webhook بضبط متغير البيئة `WEBHOOK_URL=https://رابطك/webhook` مع `WEBHOOK_SECRET`.
+
 ## 🖥 تشغيل محلي
 
 ```bash

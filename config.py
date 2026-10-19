@@ -12,9 +12,11 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 WEBHOOK_PATH = "/webhook"
 PORT = int(os.environ.get("PORT", "8080"))
 
-# وضع webhook إذا كنا على Render (يعطي RENDER_EXTERNAL_URL تلقائياً)
-WEBHOOK_MODE = bool(RENDER_EXTERNAL_URL)
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}" if WEBHOOK_MODE else ""
+# وضع webhook إذا كنا على Render أو أي منصة تعطي رابطاً عاماً — وإلا polling
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+if not WEBHOOK_URL and RENDER_EXTERNAL_URL:
+    WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+WEBHOOK_MODE = bool(WEBHOOK_URL)
 
 # DeepSeek API (اختياري)
 DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
