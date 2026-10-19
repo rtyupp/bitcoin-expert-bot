@@ -19,7 +19,13 @@ import data_feeds
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# يُبنى الـ Bot فقط إذا وُجد التوكن — بدون توكن يعمل خادم الويب للفحص الصحي وينتظر
+if config.BOT_TOKEN:
+    bot: Bot | None = Bot(
+        token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+else:
+    bot = None
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -281,11 +287,15 @@ def build_digest() -> str:
 # ── خادم الويب (webhook + cron + health) ───────────────────────
 
 async def health(request: web.Request) -> web.Response:
+    if bot is None:
+        return web.Response(status=503, text="BOT_TOKEN missing — add it in Render dashboard")
     return web.Response(text="OK")
 
 
 async def cron(request: web.Request) -> web.Response:
     """يستدعيه Render Cron Job لإرسال الملخص اليومي."""
+    if bot is None:
+        return web.Response(status=503, text="BOT_TOKEN missing")
     secret = request.headers.get("X-Cron-Secret", "")
     if config.CRON_SECRET and not secrets.compare_digest(secret, config.CRON_SECRET):
         return web.Response(status=403, text="forbidden")
@@ -301,7 +311,18 @@ async def cron(request: web.Request) -> web.Response:
 
 
 async def main():
-    if not config.BOT_TOKEN:
+    if bot is None:
+        if config.WEBHOOK_MODE:
+            # بدون توكن: نخدم /health فقط حتى يضيف المستخدم BOT_TOKEN في لوحة Render
+            app = web.Application()
+            app.router.add_get("/health", health)
+            app.router.add_post("/cron", cron)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, host="0.0.0.0", port=config.PORT)
+            await site.start()
+            logging.critical("BOT_TOKEN مفقود — أضفه في لوحة Render وسيشتغل البوت تلقائياً")
+            await asyncio.Event().wait()
         raise RuntimeError("BOT_TOKEN غير مضبوط — ضعه في متغيرات البيئة")
 
     if config.WEBHOOK_MODE:
