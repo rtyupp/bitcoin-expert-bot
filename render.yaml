@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bitcoin-expert-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+        previewValue: ""
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: DAILY_CHAT_ID
+        sync: false
+        previewValue: ""
+      - key: DEEPSEEK_API_KEY
+        sync: false
+        previewValue: ""
