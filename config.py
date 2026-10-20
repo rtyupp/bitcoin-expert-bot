@@ -27,3 +27,8 @@ ADMIN_CHAT_ID = (
     if DAILY_CHAT_ID.strip().isdigit() and int(DAILY_CHAT_ID) > 0
     else None
 )
+
+# تنبيه الصيدة (المراقبة التلقائية للإشارات القوية)
+SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "6.0"))  # |score| ≥ هذه القيمة = صيدة
+SIGNAL_COOLDOWN_MIN = int(os.environ.get("SIGNAL_COOLDOWN_MIN", "90"))  # تهدئة بين التنبيهات
+SIGNAL_INTERVAL_SEC = int(os.environ.get("SIGNAL_INTERVAL_SEC", "300"))  # فترة الفحص (وضع polling)

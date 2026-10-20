@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import ai_insights
+import alerts
 import analysis
 import config
 import data_feeds
@@ -82,6 +83,26 @@ async def cmd_help(m: Message):
 @router.message(Command("myid"))
 async def cmd_myid(m: Message):
     await m.answer(f"🆔 Chat ID الخاص بك: <code>{m.chat.id}</code>")
+
+
+@router.message(Command("signal"))
+async def cmd_signal(m: Message):
+    """فحص صيدة فوري — يعرض الحالة الحالية مقارنة بالعتبة."""
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        report = await asyncio.to_thread(analysis.analyze)
+        catch = alerts.is_catch(report)
+        state = "🚨 <b>صيدة!</b>" if catch else "ℹ️ لا توجد صيدة حالياً"
+        await m.answer(
+            f"{state}\n\n"
+            f"💰 السعر: <b>${report.price:,.0f}</b>\n"
+            f"📈 التوصية: <b>{report.recommendation}</b> (ثقة {report.confidence}%)\n"
+            f"🎯 النقاط: <code>{report.score:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})\n\n"
+            f"للتفاصيل: /analysis",
+            reply_markup=MENU,
+        )
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر الفحص: {e}")
 
 
 @router.message(Command("price"))
@@ -310,6 +331,18 @@ async def cron(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+async def signal_check(request: web.Request) -> web.Response:
+    """يستدعيه Render Cron Job لفحص الصيدة وإرسال تنبيه إن وُجدت."""
+    if bot is None:
+        return web.Response(status=503, text="BOT_TOKEN missing")
+    secret = request.headers.get("X-Cron-Secret", "")
+    if config.CRON_SECRET and not secrets.compare_digest(secret, config.CRON_SECRET):
+        return web.Response(status=403, text="forbidden")
+    res = await alerts.check_and_alert(bot)
+    import json
+    return web.json_response(res)
+
+
 async def main():
     if bot is None:
         if config.WEBHOOK_MODE:
@@ -317,6 +350,7 @@ async def main():
             app = web.Application()
             app.router.add_get("/health", health)
             app.router.add_post("/cron", cron)
+            app.router.add_post("/signal-check", signal_check)
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, host="0.0.0.0", port=config.PORT)
@@ -333,6 +367,7 @@ async def main():
         handler.register(app, path=config.WEBHOOK_PATH)
         app.router.add_get("/health", health)
         app.router.add_post("/cron", cron)
+        app.router.add_post("/signal-check", signal_check)
         setup_application(app, dp, bot=bot)
 
         await bot.set_webhook(
@@ -350,6 +385,7 @@ async def main():
     else:
         logging.info("وضع polling محلي — لإيقافه Ctrl+C")
         await bot.delete_webhook(drop_pending_updates=True)
+        asyncio.create_task(alerts.watcher_loop(bot))
         await dp.start_polling(bot)
 
 
