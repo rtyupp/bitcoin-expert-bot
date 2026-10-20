@@ -359,6 +359,9 @@ async def main():
             await asyncio.Event().wait()
         raise RuntimeError("BOT_TOKEN غير مضبوط — ضعه في متغيرات البيئة")
 
+    # مراقبة الصيدة تعمل في الوضعين (webhook و polling) — ما دامت الخدمة مستيقظة
+    asyncio.create_task(alerts.watcher_loop(bot))
+
     if config.WEBHOOK_MODE:
         app = web.Application()
         handler = SimpleRequestHandler(
@@ -385,7 +388,6 @@ async def main():
     else:
         logging.info("وضع polling محلي — لإيقافه Ctrl+C")
         await bot.delete_webhook(drop_pending_updates=True)
-        asyncio.create_task(alerts.watcher_loop(bot))
         await dp.start_polling(bot)
 
 
