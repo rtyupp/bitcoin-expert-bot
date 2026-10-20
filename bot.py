@@ -15,6 +15,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 import ai_insights
 import alerts
 import analysis
+import charts
 import config
 import data_feeds
 import settings
@@ -36,7 +37,8 @@ dp.include_router(router)
 KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 التحليل"), KeyboardButton(text="🧭 التوصية")],
-        [KeyboardButton(text="💰 السعر"), KeyboardButton(text="😱 الخوف والطمع")],
+        [KeyboardButton(text="💰 السعر"), KeyboardButton(text="🎯 الذهب")],
+        [KeyboardButton(text="😱 الخوف والطمع"), KeyboardButton(text="📐 الفوربيناتشي")],
         [KeyboardButton(text="⛓️ أون-تشين"), KeyboardButton(text="🌍 السوق")],
         [KeyboardButton(text="🤖 الذكاء الاصطناعي"), KeyboardButton(text="⏰ تنبيه سعر")],
         [KeyboardButton(text="🛡 خطة الصفقة"), KeyboardButton(text="⚙️ الإعدادات")],
@@ -44,6 +46,23 @@ KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
     input_field_placeholder="اضغط زر أو اكتب أمراً مثل /alert",
 )
+
+@router.message(Command("fibo"))
+@router.message(F.text == "📐 الفوربيناتشي")
+async def cmd_fibo(m: Message):
+    """مستويات فيبوناتشي للبيع وشراء."""
+    price, _, _ = await asyncio.to_thread(analysis.ticker)
+    await m.answer(
+        f"📐 <b>مستويات فيبوناتشي</b>\n\n"
+        f"💰 السعر الحالي: <b>${price:,.0f}</b>\n\n"
+        f"{'🟢' * int((price/1000)//45)} {'🔴' * int((price/1000)//45)}\n"
+        f"🎯 مستوى 23.6%: ${price*0.764:,.0f} | 📉 {price*1.236:,.0f}\n"
+        f"🎯 مستوى 38.2%: ${price*0.618:,.0f} | 📉 {price*1.382:,.0f}\n"
+        f"🎯 مستوى 50.0%: ${price*0.5:,.0f}  | 📉 {price*1.5:,.0f}\n"
+        f"🎯 مستوى 61.8%: ${price*0.382:,.0f} | 📉 {price*1.618:,.0f}\n"
+        f"🎯 مستوى 78.6%: ${price*0.214:,.0f} | 📉 {price*1.786:,.0f}",
+        reply_markup=KB,
+    )
 
 
 @router.message(CommandStart())
@@ -68,6 +87,9 @@ async def cmd_help(m: Message):
         "/analysis — لوحة التحليل الشاملة (كل الأطر + فيبوناتشي)\n"
         "/recommend — توصية مباشرة مع الثقة\n"
         "/price — السعر الحالي\n"
+        "/gold — تحليل الذهب (PAXG) مع شارت\n"
+        "/chart — إرسال شارت البيتكوين مع نقاط الصيد\n"
+        "/fibo — مستويات فيبوناتشي\n"
         "/feargreed — الخوف والطمع\n"
         "/onchain — رسوم الشبكة + الهاش ريت\n"
         "/market — نظرة السوق (CoinGecko)\n"
@@ -412,6 +434,57 @@ def _plan_text(report, plan) -> str:
     lines.append("")
     lines.append("⚠️ <i>ليست نصيحة مالية.</i>")
     return "\n".join(lines)
+
+
+# ── الذهب (Gold) + الرسوم البيانية ─────────────────────────────────
+
+@router.message(Command("gold"))
+@router.message(F.text == "🎯 الذهب")
+async def cmd_gold(m: Message):
+    """تحليل الذهب (PAXG) مع شارت وتحديد أول/ثاني صيد."""
+    if bot is None:
+        await m.answer("❌ البوت غير مُفعّل — أضف BOT_TOKEN في Render.", reply_markup=KB)
+        return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        df = await asyncio.to_thread(charts.fetch_4h, "PAXG/USDT", 30)
+        ana = await asyncio.to_thread(charts.analyze_chart, df)
+        if ana["first_entry"]:
+            png = await asyncio.to_thread(charts.plot_chart, df, ana, "PAXG/USDT")
+            await m.answer_photo(
+                photo=png,
+                caption=charts.short_message(ana, "PAXG/USDT"),
+                reply_markup=KB,
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await m.answer(charts.short_message(ana, "PAXG/USDT"), reply_markup=KB)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ فشل تحليل الذهب: {e}", reply_markup=KB)
+
+
+@router.message(Command("chart"))
+async def cmd_chart(m: Message):
+    """إرسال شارت البيتكوين الحالي مع تحديد النقاط."""
+    if bot is None:
+        await m.answer("❌ البوت غير مُفعّل.", reply_markup=KB)
+        return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        df = await asyncio.to_thread(charts.fetch_4h, "BTC/USDT", 30)
+        ana = await asyncio.to_thread(charts.analyze_chart, df)
+        if ana["first_entry"]:
+            png = await asyncio.to_thread(charts.plot_chart, df, ana, "BTC/USDT")
+            await m.answer_photo(
+                photo=png,
+                caption=charts.short_message(ana, "BTC/USDT"),
+                reply_markup=KB,
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await m.answer(charts.short_message(ana, "BTC/USDT"), reply_markup=KB)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ فشل تحليل الرسم البياني: {e}", reply_markup=KB)
 
 
 # ── مساعدات ────────────────────────────────────────────────────
