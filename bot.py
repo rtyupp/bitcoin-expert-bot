@@ -73,10 +73,11 @@ def section_kb(asset: str) -> ReplyKeyboardMarkup:
     name = assets.get(asset)["name"]
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📊 التحليل"), KeyboardButton(text="🧭 التوصية")],
+            [KeyboardButton(text="🧭 القرار"), KeyboardButton(text="📊 التحليل")],
             [KeyboardButton(text="🕯️ الشارت"), KeyboardButton(text="🛡 خطة الصفقة")],
-            [KeyboardButton(text="📐 فيبوناتشي"), KeyboardButton(text="⏰ تنبيه سعر")],
-            [KeyboardButton(text="⚙️ الإعدادات"), KeyboardButton(text="🔀 تغيير الأصل")],
+            [KeyboardButton(text="🤖 النموذج"), KeyboardButton(text="📐 فيبوناتشي")],
+            [KeyboardButton(text="⏰ تنبيه سعر"), KeyboardButton(text="⚙️ الإعدادات")],
+            [KeyboardButton(text="🔀 تغيير الأصل")],
         ],
         resize_keyboard=True,
         input_field_placeholder=f"قسم {name} — اختر أمراً",
@@ -142,15 +143,16 @@ async def cmd_help(m: Message):
         "📖 <b>طريقة الاستخدام</b>\n\n"
         "1) اختر السوق: 🪙 البيتكوين أو 🥇 الذهب\n"
         "2) تظهر أزرار القسم الخاص به:\n"
+        "   • 🧭 القرار — الحالة الآن + نظام السوق + احتمال النموذج\n"
         "   • 📊 التحليل — لوحة كاملة + فيبوناتشي\n"
-        "   • 🧭 التوصية — إشارة الاستراتيجية مع الأسباب\n"
         "   • 🕯️ الشارت — شموع يابانية + نقاط الصيد\n"
         "   • 🛡 خطة الصفقة — دخول/وقف/أهداف/حجم\n"
+        "   • 🤖 النموذج — تفاصيل نموذج التعلّم وأداؤه (AUC)\n"
         "   • 📐 فيبوناتشي — مستويات الدعم والمقاومة\n"
         "   • ⏰ تنبيه سعر — تنبيه عند سعر محدد\n"
         "   • ⚙️ الإعدادات — رأس المال ونسبة المخاطرة\n"
         "   • 🔀 تغيير الأصل — رجوع للقائمة الرئيسية\n\n"
-        "أوامر عامة: /price /market /feargreed /onchain /ai /myid\n"
+        "أوامر عامة: /decision /ml /price /market /feargreed /onchain /ai /myid\n"
         "⚠️ ليست نصيحة مالية.",
         reply_markup=kb(m.chat.id),
     )
@@ -176,26 +178,75 @@ async def cmd_analysis(m: Message):
 
 
 @router.message(Command("recommend"))
-@router.message(F.text == "🧭 التوصية")
+@router.message(Command("decision"))
+@router.message(F.text.in_({"🧭 التوصية", "🧭 القرار"}))
 async def cmd_recommend(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     key = _sec(m.chat.id)
     cfg = assets.get(key)
     try:
-        r = await asyncio.to_thread(analysis.analyze, "4h", key)
+        d = await asyncio.to_thread(analysis.decision, key)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر التحليل: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر القرار: {e}", reply_markup=kb(m.chat.id))
         return
+    prob = f"{d['prob_up']:.1%}" if d["prob_up"] is not None else "—"
+    auc = d["ml_metrics"]["auc"] if d["ml_metrics"] else "—"
+    active = "نشطة الآن ✅" if d["active"] else "لا إشارة حالياً ⏸"
+    reg = d["regime"]
     await m.answer(
-        f"{cfg['emoji']} <b>{cfg['name']}</b>\n\n"
-        f"💰 السعر: <b>${r.price:,.2f}</b>\n"
-        f"🎯 الاستراتيجية: {r.strategy_name}\n"
-        f"📌 الإشارة: <b>{r.strategy_label}</b>\n"
-        f"🧭 التوصية: <b>{r.recommendation}</b> (ثقة {r.confidence}%)\n"
-        f"📊 النقاط: <code>{r.final_score:+.1f}</code>\n"
-        f"🛡 وقف مقترح: <code>${r.price - 2 * r.atr:,.2f}</code>\n\n"
-        f"للتفاصيل الكاملة: 📊 التحليل\n"
-        f"⚠️ <i>ليست نصيحة مالية.</i>",
+        f"{cfg['emoji']} <b>{d['name']} — {d['stance_ar']}</b>\n\n"
+        f"💰 السعر: <b>${d['price']:,.2f}</b>\n"
+        f"🎯 الاستراتيجية: {d['strategy']}\n"
+        f"📌 الحالة: <b>{d['strategy_label']}</b> ({d['strategy_score']:+.1f}) — {active}\n"
+        f"🌊 النظام: <b>{reg.get('name')}</b> (كفاءة {reg.get('efficiency')})\n"
+        f"🤖 النموذج: احتمال صعود <b>{prob}</b> (AUC {auc})\n"
+        f"🎚 الثقة: <b>{d['confidence']}%</b>\n\n"
+        f"<b>الأسباب:</b>\n"
+        + "\n".join(f"  • {r}" for r in d["reasons"][:4])
+        + "\n\n⚠️ <i>ليست نصيحة مالية.</i>",
+        reply_markup=kb(m.chat.id),
+    )
+
+
+@router.message(Command("ml"))
+@router.message(F.text == "🤖 النموذج")
+async def cmd_ml(m: Message):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    key = _sec(m.chat.id)
+    cfg = assets.get(key)
+    try:
+        mv = await asyncio.to_thread(analysis.ml_view, key)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر تحميل النموذج: {e}", reply_markup=kb(m.chat.id))
+        return
+    ml, reg = mv.get("ml", {}), mv.get("regime", {})
+    if not ml.get("ok"):
+        await m.answer(f"⚠️ النموذج غير متاح: {ml.get('reason', '—')}", reply_markup=kb(m.chat.id))
+        return
+    met = ml["metrics"]
+    others = "\n".join(f"  • {k}: AUC <code>{v['auc']}</code>" for k, v in ml["all_models"].items())
+    ens = "\n".join(
+        f"  • {k}: {v:.1%} (وزن {ml.get('weights', {}).get(k, 0):.2f})"
+        for k, v in ml.get("model_probs", {}).items()
+    )
+    prob = f"{ml['prob_up']:.1%}"
+    await m.answer(
+        f"🤖 <b>نموذج التوقع — {cfg['name']}</b>\n\n"
+        f"النموذج الأفضل: <b>{ml['model']}</b>\n"
+        f"الأفق: {ml['horizon']} شموع 4h = 24 ساعة\n"
+        f"عينات: {ml['n_samples']} | ميزات: {len(ml['features'])}\n"
+        f"احتمال الصعود (مزج مرجّح): <b>{prob}</b>\n\n"
+        f"🧩 <b>مزج النماذج:</b>\n{ens}\n\n"
+        f"📊 <b>تحقق زمني ({met['folds']} أقسام):</b>\n"
+        f"  • AUC: <code>{met['auc']}</code>\n"
+        f"  • الدقة: <code>{met['acc']:.1%}</code>\n"
+        f"  • Brier: <code>{met['brier']}</code>\n\n"
+        f"🔍 مقارنة النماذج:\n{others}\n\n"
+        f"🌊 <b>نظام السوق:</b> {reg.get('name')}\n"
+        f"  {reg.get('note')}\n"
+        f"  كفاءة الاتجاه {reg.get('efficiency')} | ATR% {reg.get('atr_pct')}% | "
+        f"فوق EMA200: {'نعم' if reg.get('above_ema200') else 'لا'}\n\n"
+        f"💡 AUC = 0.50 عشوائي، >0.60 جيد جداً في الأسواق.",
         reply_markup=kb(m.chat.id),
     )
 
@@ -252,8 +303,9 @@ async def _send_chart(m: Message, key: str) -> None:
         async with _chart_lock:
             df = await asyncio.to_thread(charts.fetch_4h, cfg["symbol"], 20)
             ana = await asyncio.to_thread(charts.analyze_chart, df, key)
-            msg = charts.short_message(ana, cfg["symbol"])
             png = await asyncio.to_thread(charts.plot_chart, df, ana, cfg["symbol"])
+        dec = await asyncio.to_thread(analysis.decision, key)
+        msg = charts.short_message(ana, cfg["symbol"], dec)
         _trim_memory()
         # aiogram 3 يطلب InputFile — الـ bytes الخام تُرفض
         photo = BufferedInputFile(png, filename=f"{cfg['key']}_chart.png")
@@ -318,20 +370,21 @@ async def cmd_plan(m: Message):
     key = _sec(m.chat.id)
     cfg = assets.get(key)
     try:
-        r = await asyncio.to_thread(analysis.analyze, "4h", key)
+        d = await asyncio.to_thread(analysis.decision, key)
     except Exception as e:  # noqa: BLE001
         await m.answer(f"❌ تعذّر التحليل: {e}", reply_markup=kb(m.chat.id))
         return
-    direction = "long" if r.final_score >= 0 else "short"
+    direction = "long" if d["stance"] != "short" else "short"
     plan = analysis.risk_plan(
-        r.price, direction, r.atr, settings.account_size(), settings.risk_pct(), rr=cfg["rr"]
+        d["price"], direction, d["atr"], settings.account_size(), settings.risk_pct(), rr=cfg["rr"]
     )
     sign = 1 if direction == "long" else -1
     lines = [
-        f"{cfg['emoji']} <b>خطة {cfg['name']}</b>",
-        f"🎯 {cfg['strategy_name']}",
+        f"{cfg['emoji']} <b>خطة {cfg['name']}</b> — الحالة: <b>{d['stance_ar']}</b>",
+        f"🎯 {cfg['strategy_name']} · ثقة {d['confidence']}%",
         "",
-        f"📌 الإشارة: <b>{r.strategy_label}</b> ({r.final_score:+.1f})",
+        f"📌 {d['strategy_label']} ({d['strategy_score']:+.1f})"
+        + ("" if d["active"] else " — ⏸ لا إشارة نشطة الآن"),
         f"💰 الدخول: <code>${plan['entry']:,.2f}</code>",
         f"🛑 الوقف: <code>${plan['stop']:,.2f}</code> (2×ATR)",
         "",

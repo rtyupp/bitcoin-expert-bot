@@ -591,3 +591,81 @@ def risk_plan(
             "capped": capped,
         })
     return plan
+
+
+# ── طبقة القرار: استراتيجية + نظام سوق + نموذج تعلّم ──────────────
+
+_ml_cache: dict[str, tuple[float, dict]] = {}
+_ML_TTL = 900  # 15 دقيقة
+
+_STANCE_AR = {"long": "شراء 🟢", "short": "بيع 🔴", "flat": "لا صفقة ⏸"}
+
+
+def ml_view(asset: str = "btc", bars: int = 1000) -> dict:
+    """نموذج التعلّم + نظام السوق، مع تخزين مؤقت 15 دقيقة."""
+    import time
+
+    import ml_engine
+
+    now = time.time()
+    hit = _ml_cache.get(asset)
+    if hit and now - hit[0] < _ML_TTL:
+        return hit[1]
+    cfg = assets.get(asset)
+    df, _ = fetch_ohlcv(cfg["symbol"], "4h", bars)
+    out = {"ml": ml_engine.walk_forward(df), "regime": ml_engine.regime(df)}
+    _ml_cache[asset] = (now, out)
+    return out
+
+
+def decision(asset: str = "btc") -> dict:
+    """القرار النهائي: الاستراتيجية + نظام السوق + احتمال النموذج (بالدالتين بالتوازي)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    cfg = assets.get(asset)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dec") as ex:
+        f_r = ex.submit(analyze, "4h", asset)
+        f_m = ex.submit(ml_view, asset)
+        r = f_r.result()
+        mv = f_m.result()
+    ml = mv.get("ml", {})
+    reg = mv.get("regime", {})
+    prob = float(ml["prob_up"]) if ml.get("ok") else None
+
+    strat = r.strategy_score
+    if strat > 0 and (prob is None or prob >= 0.5):
+        stance = "long"
+    elif strat < 0 and (prob is None or prob < 0.5):
+        stance = "short"
+    else:
+        stance = "flat"
+
+    strength = min(abs(strat) / 3.5, 1.0)
+    conf_ml = abs((prob if prob is not None else 0.5) - 0.5) * 2
+    confidence = round(min(1.0, strength * 0.65 + conf_ml * 0.35) * 100)
+
+    reasons = list(r.reasons)
+    if prob is not None:
+        reasons.insert(0, f"نموذج {ml['model']}: احتمال صعود {prob:.1%} (AUC {ml['metrics']['auc']})")
+    reasons.insert(0, f"نظام السوق: {reg.get('name', '—')} — {reg.get('note', '')}")
+
+    return {
+        "asset": asset,
+        "name": cfg["name"],
+        "symbol": cfg["symbol"],
+        "strategy": cfg["strategy_name"],
+        "rr": cfg["rr"],
+        "price": r.price,
+        "atr": r.atr,
+        "strategy_label": r.strategy_label,
+        "strategy_score": strat,
+        "stance": stance,
+        "stance_ar": _STANCE_AR[stance],
+        "confidence": confidence,
+        "active": abs(strat) >= 1.0,
+        "regime": reg,
+        "prob_up": prob,
+        "ml_model": ml.get("model"),
+        "ml_metrics": ml.get("metrics"),
+        "reasons": reasons[:6],
+    }

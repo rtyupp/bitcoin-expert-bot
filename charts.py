@@ -128,35 +128,58 @@ def plot_chart(df: pd.DataFrame, a: dict, symbol: str) -> bytes:
     return chartimg.render(df, a, symbol, strategy=a.get("strategy_en", ""))
 
 
-def short_message(a: dict, symbol: str) -> str:
-    """رسالة موجزة بصيغة HTML متوافقة مع ParseMode.HTML."""
+def short_message(a: dict, symbol: str, dec: dict | None = None) -> str:
+    """رسالة موجزة: الحالة الآن + آخر إشارة (مع تحذير لو قديمة)."""
     name = a.get("asset_name", symbol)
+
+    head = []
+    if dec:
+        head.append(
+            f"<b>{name}</b> — الحالة الآن: <b>{dec['stance_ar']}</b> · ثقة {dec['confidence']}%"
+        )
+        if dec.get("prob_up") is not None:
+            head.append(f"🤖 احتمال صعود: <b>{dec['prob_up']:.1%}</b>")
+        reg = dec.get("regime") or {}
+        if reg:
+            head.append(f"🌊 {reg.get('name')} — {reg.get('note')}")
+        head.append("")
+    else:
+        head.append(f"<b>{name}</b> — {symbol}")
+        head.append("")
+
     if not a["first_entry"]:
-        return (
-            f"📊 <b>{name}</b> — {symbol}\n\n"
-            f"🎯 الاستراتيجية: <b>{a.get('strategy', '—')}</b>\n"
-            "لا توجد إشارة صيد حالياً.\n"
-            "انتظر تحقق شروط الاستراتيجية."
+        return "\n".join(
+            head
+            + [
+                f"🎯 الاستراتيجية: <b>{a.get('strategy', '—')}</b>",
+                "لا توجد إشارة صيد على الشارت الحالي.",
+                "انتظر تحقق شروط الاستراتيجية.",
+            ]
         )
 
     d = a["direction"]
     fe, se = a["first_entry"], a["second_entry"]
     age = a["signal_age_hours"]
+    stale = age is not None and age >= 24
     icon = "🟢" if d == "buy" else "🔴"
     word = "شراء" if d == "buy" else "بيع"
 
-    lines = [
-        f"{icon} <b>{name} — إشارة {word}</b>",
-        f"🎯 {a.get('strategy', '')}",
-        "",
-        f"📍 <b>أول صيد:</b> <code>{fe['price']:,.2f}</code>",
-    ]
+    lines = list(head)
+    lines.append(f"🎯 {a.get('strategy', '')}")
+    lines.append("")
+    if stale:
+        lines.append(f"⚠️ <b>آخر إشارة تاريخية — قبل {age} ساعة (منتهية)</b>")
+    label = "آخر إشارة" if stale else "أول صيد"
+    lines.append(f"{icon} <b>{label} ({word}):</b> <code>{fe['price']:,.2f}</code>")
     if se:
         lines.append(f"📍 <b>ثاني صيد:</b> <code>{se['price']:,.2f}</code>")
     lines.append(f"🛑 <b>وقف:</b> <code>{a['stop_loss']:,.2f}</code>")
     lines.append(f"🎯 <b>هدف:</b> <code>{a['tp1']:,.2f}</code> (1:{a['rr']:.0f})")
-    if age is not None and age >= 6:
+    if not stale and age is not None and age >= 6:
         lines.append(f"⏳ عمر الإشارة: {age} ساعة")
-    lines += ["", f"💰 الحالي: <code>{a['current_price']:,.2f}</code>",
-              "⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>"]
+    lines += [
+        "",
+        f"💰 الحالي: <code>{a['current_price']:,.2f}</code>",
+        "⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>",
+    ]
     return "\n".join(lines)
