@@ -50,19 +50,25 @@ KB = ReplyKeyboardMarkup(
 @router.message(Command("fibo"))
 @router.message(F.text == "📐 الفوربيناتشي")
 async def cmd_fibo(m: Message):
-    """مستويات فيبوناتشي للبيع وشراء."""
-    price, _, _ = await asyncio.to_thread(analysis.ticker)
-    await m.answer(
-        f"📐 <b>مستويات فيبوناتشي</b>\n\n"
-        f"💰 السعر الحالي: <b>${price:,.0f}</b>\n\n"
-        f"{'🟢' * int((price/1000)//45)} {'🔴' * int((price/1000)//45)}\n"
-        f"🎯 مستوى 23.6%: ${price*0.764:,.0f} | 📉 {price*1.236:,.0f}\n"
-        f"🎯 مستوى 38.2%: ${price*0.618:,.0f} | 📉 {price*1.382:,.0f}\n"
-        f"🎯 مستوى 50.0%: ${price*0.5:,.0f}  | 📉 {price*1.5:,.0f}\n"
-        f"🎯 مستوى 61.8%: ${price*0.382:,.0f} | 📉 {price*1.618:,.0f}\n"
-        f"🎯 مستوى 78.6%: ${price*0.214:,.0f} | 📉 {price*1.786:,.0f}",
-        reply_markup=KB,
-    )
+    """مستويات فيبوناتشي الحقيقية من آخر 100 شمعة."""
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        df, _ = await asyncio.to_thread(analysis.fetch_ohlcv, "1h", 250)
+        fib = analysis.fib_levels(df)
+        price = float(df["close"].iloc[-1])
+        lines = [
+            "📐 <b>مستويات فيبوناتشي</b> — BTC/USDT",
+            "",
+            f"💰 السعر الحالي: <b>${price:,.0f}</b>",
+            "",
+        ]
+        for k in ("0.000", "0.236", "0.382", "0.500", "0.618", "0.786", "1.000"):
+            tag = " ⬆️ دعم" if fib[k] < price else " ⬇️ مقاومة"
+            lines.append(f"• {k}: <code>${fib[k]:,.0f}</code>{tag}")
+        lines += ["", "⚠️ <i>ليست نصيحة مالية.</i>"]
+        await m.answer("\n".join(lines), reply_markup=KB)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر حساب المستويات: {e}", reply_markup=KB)
 
 
 @router.message(CommandStart())

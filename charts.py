@@ -33,61 +33,66 @@ def analyze_chart(df: pd.DataFrame) -> dict:
     breakout_buy = (c > up) & (v > 1.5 * vol20)
     breakout_short = (c < lo) & (v > 1.5 * vol20)
 
+    buy_idx = np.where(breakout_buy.values)[0]
+    sell_idx = np.where(breakout_short.values)[0]
+    buy_last = int(buy_idx[-1]) if len(buy_idx) else -1
+    sell_last = int(sell_idx[-1]) if len(sell_idx) else -1
+    direction = None
+    idx = -1
+    if buy_last > sell_last:
+        direction, idx = "buy", buy_last
+    elif sell_last > buy_last:
+        direction, idx = "sell", sell_last
+
     events = {
-        "symbol": "unknown",
         "current_price": float(c.iloc[-1]),
         "current_ts": df["ts"].iloc[-1],
         "first_entry": None,
         "second_entry": None,
         "stop_loss": None,
-        "risk_reward": None,
-        "direction": None,
+        "tp1": None,
+        "tp2": None,
+        "direction": direction,
+        "signal_age_hours": None,
     }
 
-    if breakout_buy.any():
-        idx = breakout_buy[breakout_buy].index[0]
-        entry_px = float(c.iloc[idx])
-        stop = float(entry_px - 2 * atr.iloc[idx])
-        target = float(entry_px + 2 * atr.iloc[idx])  # TP1
-        events["first_entry"] = {
-            "idx": int(idx),
-            "price": entry_px,
-            "type": "breakout",
-        }
-        # الصيد الثاني: pullback للـ MA20 أو دعم
-        for j in range(idx + 2, min(idx + 10, len(df) - 1)):
-            if c.iloc[j] < mid.iloc[j] and v.iloc[j] > vol20.iloc[j]:
-                events["second_entry"] = {
-                    "idx": int(j),
-                    "price": float(mid.iloc[j] * 0.995),
-                    "type": "pullback",
-                }
-                break
-        events["stop_loss"] = stop
-        events["risk_reward"] = f"1:{2 * atr.iloc[idx] / (entry_px - stop):.1f}" if entry_px > stop else "1:1"
-        events["direction"] = "buy"
+    if idx < 0 or idx >= len(df) - 1:
+        return events
 
-    elif breakout_short.any():
-        idx = breakout_short[breakout_short].index[0]
-        entry_px = float(c.iloc[idx])
-        stop = float(entry_px + 2 * atr.iloc[idx])
-        target = float(entry_px - 2 * atr.iloc[idx])
-        events["first_entry"] = {
-            "idx": int(idx),
-            "price": entry_px,
-            "type": "breakout",
-        }
-        for j in range(idx + 2, min(idx + 10, len(df) - 1)):
-            if c.iloc[j] > mid.iloc[j] and v.iloc[j] > vol20.iloc[j]:
-                events["second_entry"] = {
-                    "idx": int(j),
-                    "price": float(mid.iloc[j] * 1.005),
-                    "type": "pullback",
-                }
-                break
-        events["stop_loss"] = stop
-        events["risk_reward"] = f"1:{2 * atr.iloc[idx] / (stop - entry_px):.1f}" if stop > entry_px else "1:1"
-        events["direction"] = "sell"
+    d = 1 if direction == "buy" else -1
+    entry = float(c.iloc[idx])
+    sd = float(atr.iloc[idx]) * 2
+    events["first_entry"] = {
+        "idx": int(idx),
+        "price": entry,
+        "ts": df["ts"].iloc[idx],
+        "type": "breakout",
+    }
+    events["stop_loss"] = entry - d * sd
+    events["tp1"] = entry + d * sd          # 1:1
+    events["tp2"] = entry + d * 2 * sd      # 1:2
+    events["signal_age_hours"] = int(
+        (df["ts"].iloc[-1] - df["ts"].iloc[idx]).total_seconds() / 3600
+    )
+
+    # الصيد الثاني: رجعة للمتوسط (MA20) بعد الكسر
+    for j in range(idx + 1, min(idx + 12, len(df))):
+        if direction == "buy" and c.iloc[j] <= mid.iloc[j]:
+            events["second_entry"] = {
+                "idx": int(j),
+                "price": float(c.iloc[j]),
+                "ts": df["ts"].iloc[j],
+                "type": "pullback",
+            }
+            break
+        if direction == "sell" and c.iloc[j] >= mid.iloc[j]:
+            events["second_entry"] = {
+                "idx": int(j),
+                "price": float(c.iloc[j]),
+                "ts": df["ts"].iloc[j],
+                "type": "pullback",
+            }
+            break
 
     return events
 
@@ -109,81 +114,91 @@ def plot_chart(df: pd.DataFrame, analysis: dict, symbol: str) -> bytes:
     ax_price.plot(df["ts"], mid, color="yellow", linewidth=0.8, linestyle="-.", label="BB Mid")
     ax_price.plot(df["ts"], lo, color="red", linewidth=0.8, linestyle="--", label="BB Lower")
 
-    ax_price.set_ylabel("Price (USDT)", color="white", fontsize=9)
-    ax_price.tick_params(axis="y", colors="white")
-    ax_price.legend(loc="upper left", fontsize=8, framealpha=0.3, labelcolor="white")
-    ax_price.grid(alpha=0.2)
+    ax_price.set_ylabel("السعر (USDT)", color="#bdbdbd", fontsize=9)
+    ax_price.tick_params(colors="#bdbdbd")
+    ax_price.legend(loc="upper left", fontsize=7, framealpha=0.25, labelcolor="#f7f7f7")
+    ax_price.grid(alpha=0.15)
 
     # رسم نقاط الصيد
     if analysis["first_entry"]:
         fe = analysis["first_entry"]
-        color = "lime" if analysis["direction"] == "buy" else "orange"
-        ax_price.scatter(df["ts"].iloc[fe["idx"]], fe["price"], s=100, c=color, zorder=5, marker="^" if analysis["direction"]=="buy" else "v", label=f"أول صيد {fe['type']}", edgecolors="black")
+        color = "#69f0ae" if analysis["direction"] == "buy" else "#ffab40"
+        mk = "^" if analysis["direction"] == "buy" else "v"
+        ax_price.scatter(fe["ts"], fe["price"], s=120, c=color, marker=mk, zorder=6, edgecolors="black", linewidths=1.2, label="أول صيد")
+        ax_price.annotate(f"أول صيد {fe['price']:,.0f}", (fe["ts"], fe["price"]),
+                          textcoords="offset points", xytext=(0, 14 if analysis["direction"] == "buy" else -22),
+                          fontsize=8, color="white", ha="center")
 
     if analysis["second_entry"]:
         se = analysis["second_entry"]
-        ax_price.scatter(df["ts"].iloc[se["idx"]], se["price"], s=80, c="gold", zorder=5, marker="o", label=f"ثاني صيد {se['type']}", edgecolors="black")
+        ax_price.scatter(se["ts"], se["price"], s=100, c="#ffd700", marker="o", zorder=6, edgecolors="black", linewidths=1.2, label="ثاني صيد")
+        ax_price.annotate(f"ثاني صيد {se['price']:,.0f}", (se["ts"], se["price"]),
+                          textcoords="offset points", xytext=(0, 14 if analysis["direction"] == "buy" else -22),
+                          fontsize=8, color="white", ha="center")
 
     if analysis["stop_loss"]:
-        ax_price.axhline(analysis["stop_loss"], color="red", linestyle=":", alpha=0.7, label=f"SL {analysis['stop_loss']/1000:.1f}k")
+        ax_price.axhline(analysis["stop_loss"], color="#ef5350", ls=":", lw=1.2, alpha=0.8)
+        ax_price.text(df["ts"].iloc[-1], analysis["stop_loss"], f" وقف {analysis['stop_loss']:,.0f}",
+                      color="#ef5350", fontsize=7, va="center", ha="right")
 
-    # الفتحة والإغلاق
+    if analysis["tp1"]:
+        tpcol = "#69f0ae" if analysis["direction"] == "buy" else "#ffab40"
+        ax_price.axhline(analysis["tp1"], color=tpcol, ls=":", lw=1.2, alpha=0.8)
+        ax_price.text(df["ts"].iloc[-1], analysis["tp1"], f" هدف1 {analysis['tp1']:,.0f}",
+                      color=tpcol, fontsize=7, va="center", ha="right")
+
+    # السعر الأخير
     plt.setp(ax_price.xaxis.get_majorticklabels(), visible=False)
-    ax_price.set_title(f"{symbol} - Entry Signals", color="white", fontsize=10, fontweight="bold")
+    ax_price.set_title(f"{symbol} — شارت 4 ساعات", color="#f7f7f7", fontsize=11)
+    last = float(c.iloc[-1])
+    chg = (last / float(c.iloc[-2]) - 1) * 100
+    ax_price.text(0.01, 0.02, f"{last:,.0f} USDT  ({chg:+.2f}%)",
+                  transform=ax_price.transAxes, color="#f7f7f7", fontsize=9,
+                  va="bottom", bbox=dict(boxstyle="round", facecolor="#212121", alpha=0.8))
 
-    # السعر الأخير + مؤشرات
-    last = c.iloc[-1]
-    chg = (last / c.iloc[-2] - 1) * 100
-    ax_price.text(0.02, 0.95, f"{last:,.0f} | {chg:+.2f}% | ATR: {atr.iloc[-1]:.0f}",
-                  transform=ax_price.transAxes, color="white", fontsize=9,
-                  verticalalignment="top", bbox=dict(boxstyle="round", facecolor="black", alpha=0.5))
+    # الحجم
+    ax_vol.bar(df["ts"], v, color="#78909c", alpha=0.7)
+    ax_vol.set_ylabel("الحجم", color="#bdbdbd", fontsize=9)
+    ax_vol.tick_params(colors="#bdbdbd")
+    ax_vol.grid(alpha=0.15)
 
-    # الريب
-    ax_vol.bar(df["ts"], v, color="gray", alpha=0.6)
-    ax_vol.set_ylabel("Volume", color="white", fontsize=9)
-    ax_vol.tick_params(axis="y", colors="white")
-    ax_vol.set_xlabel("Time", color="white", fontsize=9)
-    ax_vol.grid(alpha=0.2)
-    ax_vol.set_ylim(0, v.max() * 1.5)
+    for ax in axes:
+        ax.set_facecolor("#121212")
+    fig.set_facecolor("#121212")
 
     plt.tight_layout()
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=100, facecolor="black", edgecolor="none", bbox_inches="tight")
+    plt.savefig(buf, format="png", dpi=110, facecolor="#121212", edgecolor="none", bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
 
 
 def short_message(analysis: dict, symbol: str) -> str:
-    """رسالة موجزة وواضحة مع النقاط."""
+    """رسالة موجزة وواضحة بصيغة HTML (متوافقة مع ParseMode.HTML)."""
     if not analysis["first_entry"]:
-        return f"📊 لا توجد إشارات صيد واضحة لـ {symbol} حالياً.\nانتظر حالة كسر بولينجر مع حجم كبير."
+        return (
+            f"📊 <b>{symbol}</b>\n\n"
+            "لا توجد إشارة صيد حالياً.\n"
+            "انتظر كسر بولينجر مع حجم >= 1.5x."
+        )
 
-    lines = [f"📈 **{symbol} - صيد جديد**"]
-    if analysis["direction"] == "buy":
-        lines.append("🟢 **اتجاه الشراء**")
-    else:
-        lines.append("🔴 **اتجاه البيع**")
-
+    d = analysis["direction"]
     fe = analysis["first_entry"]
-    lines.append(f"\n📍 **أول صيد:** {fe['type']}")
-    lines.append(f"   السعر: `{fe['price']:,.2f}`")
-    if fe["type"] == "breakout":
-        lines.append(f"   الوقت: `{analysis['current_ts'].strftime('%d/%m %H:%M')}`")
+    se = analysis["second_entry"]
+    age = analysis["signal_age_hours"]
 
-    if analysis["second_entry"]:
-        se = analysis["second_entry"]
-        lines.append(f"\n📍 **ثاني صيد:** {se['type']}")
-        lines.append(f"   السعر: `{se['price']:,.2f}`")
-
-    if analysis["stop_loss"]:
-        lines.append(f"\n🛑 **وقف الخسارة:** `{analysis['stop_loss']:,.2f}`")
-
-    if analysis["risk_reward"]:
-        lines.append(f"\n📊 **نسبة المخاطرة/الربح:** 1:{analysis['risk_reward'].split(':')[1]}")
-
-    lines.append("\n💡 **نصيحة:** استخدم الوقف، وقسم الصفقة على 1-2 نقطة.")
-    lines.append("\n⚠️ هذه رسائل تحليلية، ليست موافقة مالية.")
-
+    head = f"{'🟢' if d == 'buy' else '🔴'} <b>{symbol} — إشارة {'شراء' if d == 'buy' else 'بيع'}</b>"
+    lines = [head, ""]
+    lines.append(f"📍 <b>أول صيد:</b> <code>{fe['price']:,.0f}</code> ({fe['type']})")
+    if se:
+        lines.append(f"📍 <b>ثاني صيد:</b> <code>{se['price']:,.0f}</code> ({se['type']})")
+    lines.append(f"🛑 <b>وقف:</b> <code>{analysis['stop_loss']:,.0f}</code>")
+    lines.append(f"🎯 <b>هدف 1:</b> <code>{analysis['tp1']:,.0f}</code>")
+    if age is not None and age >= 6:
+        lines.append(f"⏳ عمر الإشارة: {age} ساعة")
+    lines.append("")
+    lines.append(f"💰 الحالي: <code>{analysis['current_price']:,.0f}</code>")
+    lines.append("⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>")
     return "\n".join(lines)
