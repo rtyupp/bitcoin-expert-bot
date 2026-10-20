@@ -3,10 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import ccxt
-import pandas as pd
-import ta
-
 EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
 SYMBOL = "BTC/USDT"
 MAX_SCORE = 9.5  # مجموع أعلى الأوزان الإيجابية — لتطبيع الثقة
@@ -14,6 +10,9 @@ MAX_SCORE = 9.5  # مجموع أعلى الأوزان الإيجابية — ل�
 
 def fetch_ohlcv(timeframe: str = "1h", limit: int = 250) -> tuple[pd.DataFrame, str]:
     """جلب الشموع من أول منصة تستجيب (تحويل تلقائي بين المنصات عند الحظر)."""
+    import ccxt
+    import pandas as pd
+
     errors = []
     for eid in EXCHANGES:
         try:
@@ -29,6 +28,8 @@ def fetch_ohlcv(timeframe: str = "1h", limit: int = 250) -> tuple[pd.DataFrame, 
 
 def ticker() -> tuple[float, float | None, str]:
     """سعر البيتكوين الحالي + نسبة التغير 24س من أول منصة تستجيب."""
+    import ccxt
+
     for eid in EXCHANGES:
         try:
             ex = getattr(ccxt, eid)()
@@ -113,6 +114,8 @@ class Report:
 
 
 def analyze(timeframe: str = "1h") -> Report:
+    import ta
+
     df, exchange = fetch_ohlcv(timeframe)
     close, high, low, vol = df["close"], df["high"], df["low"], df["volume"]
 
