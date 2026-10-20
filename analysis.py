@@ -121,6 +121,97 @@ class Report:
         return "\n".join(lines)
 
 
+def score_from_df(df, change_24h: float | None = None) -> float:
+    """نسخة رقمية مستقلة من نظام نقاط analyze() — للاختبار التاريخي (backtest).
+
+    مطابقة لمنطق analyze() تماماً؛ عند تعديل القواعد في analyze() حدّث هنا أيضاً.
+    ترجع النقاط النهائية فقط (من -9.5 إلى +9.5).
+    """
+    import ta
+
+    close, high, low, vol = df["close"], df["high"], df["low"], df["volume"]
+
+    ema20 = ta.trend.EMAIndicator(close, 20).ema_indicator()
+    ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator()
+    ema200 = ta.trend.EMAIndicator(close, 200).ema_indicator() if len(df) >= 200 else None
+    rsi = ta.momentum.RSIIndicator(close, 14).rsi()
+    macd = ta.trend.MACD(close)
+    bb = ta.volatility.BollingerBands(close, 20, 2)
+
+    price = float(close.iloc[-1])
+    score = 0.0
+
+    # 1) الاتجاه العام مقابل EMA200
+    if ema200 is not None:
+        e200 = float(ema200.iloc[-1])
+        if price > e200:
+            score += 2.0 if float(ema20.iloc[-1]) > float(ema50.iloc[-1]) else 1.0
+        else:
+            score -= 2.0 if float(ema20.iloc[-1]) < float(ema50.iloc[-1]) else 1.0
+
+    # 2) تقاطع EMA20/50
+    e20, e50 = float(ema20.iloc[-1]), float(ema50.iloc[-1])
+    e20p, e50p = float(ema20.iloc[-2]), float(ema50.iloc[-2])
+    if e20 > e50 and e20p <= e50p:
+        score += 2.0
+    elif e20 > e50:
+        score += 1.0
+    elif e20 < e50 and e20p >= e50p:
+        score -= 2.0
+    else:
+        score -= 1.0
+
+    # 3) RSI
+    r = float(rsi.iloc[-1])
+    if r < 30:
+        score += 1.5
+    elif r < 45:
+        score += 0.5
+    elif r > 70:
+        score -= 1.5
+    elif r > 55:
+        score += 0.5
+
+    # 4) MACD
+    m = float(macd.macd().iloc[-1])
+    s = float(macd.macd_signal().iloc[-1])
+    mp = float(macd.macd().iloc[-2])
+    sp = float(macd.macd_signal().iloc[-2])
+    if m > s and mp <= sp:
+        score += 2.0
+    elif m > s:
+        score += 1.0
+    elif m < s and mp >= sp:
+        score -= 2.0
+    else:
+        score -= 1.0
+
+    # 5) بولينجر باند
+    bu = float(bb.bollinger_hband().iloc[-1])
+    bl = float(bb.bollinger_lband().iloc[-1])
+    if price <= bl * 1.005:
+        score += 1.0
+    elif price >= bu * 0.995:
+        score -= 1.0
+
+    # 6) الحجم
+    avg_vol = float(vol.iloc[-21:-1].mean()) if len(vol) > 21 else float(vol.mean())
+    vol_ratio = float(vol.iloc[-1]) / avg_vol if avg_vol else 1.0
+    if vol_ratio > 1.5:
+        score += 0.5
+    elif vol_ratio < 0.6:
+        score -= 0.5
+
+    # 7) تغير 24س
+    if change_24h is not None:
+        if -8 <= change_24h < -3:
+            score += 0.5
+        elif change_24h > 8:
+            score -= 0.5
+
+    return round(score, 1)
+
+
 def analyze(timeframe: str = "1h") -> Report:
     import ta
 
