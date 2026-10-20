@@ -30,5 +30,6 @@ ADMIN_CHAT_ID = (
 
 # تنبيه الصيدة (المراقبة التلقائية للإشارات القوية)
 SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "4.0"))  # |score| ≥ هذه القيمة = صيدة
+SIGNAL_MIN_AGREEMENT = int(os.environ.get("SIGNAL_MIN_AGREEMENT", "1"))  # أدنى عدد أطر متوافقة (1=مطفى — backtest أظهر عدم فائدته)
 SIGNAL_COOLDOWN_MIN = int(os.environ.get("SIGNAL_COOLDOWN_MIN", "30"))  # تهدئة بين التنبيهات
 SIGNAL_INTERVAL_SEC = int(os.environ.get("SIGNAL_INTERVAL_SEC", "300"))  # فترة الفحص (وضع polling)

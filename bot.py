@@ -86,17 +86,24 @@ async def cmd_myid(m: Message):
 
 @router.message(Command("signal"))
 async def cmd_signal(m: Message):
-    """فحص صيدة فوري — يعرض الحالة الحالية مقارنة بالعتبة."""
+    """فحص صيدة فوري — يعرض النقاط الموزونة وتوافق الأطر."""
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        report = await asyncio.to_thread(analysis.analyze)
-        catch = alerts.is_catch(report)
-        state = "🚨 <b>صيدة!</b>" if catch else "ℹ️ لا توجد صيدة حالياً"
+        mm = await asyncio.to_thread(analysis.analyze_multi)
+        combined = mm["combined"]
+        agreement = mm["agreement"]
+        strong = abs(combined) >= config.SIGNAL_THRESHOLD
+        agree_ok = agreement >= config.SIGNAL_MIN_AGREEMENT
+        if strong and agree_ok:
+            state = "🚨 <b>صيدة!</b> (توافق أطر ✅)"
+        elif strong:
+            state = f"⚠️ نقاط قوية ({combined:+.1f}) لكن توافق الأطر ضعيف ({agreement}/{mm['total']})"
+        else:
+            state = f"ℹ️ لا توجد صيدة حالياً (نقاط {combined:+.1f})"
         await m.answer(
             f"{state}\n\n"
-            f"💰 السعر: <b>${report.price:,.0f}</b>\n"
-            f"📈 التوصية: <b>{report.recommendation}</b> (ثقة {report.confidence}%)\n"
-            f"🎯 النقاط: <code>{report.score:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})\n\n"
+            f"🤝 توافق الأطر: {agreement}/{mm['total']}\n"
+            f"🎯 النقاط الموزونة: <code>{combined:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})\n\n"
             f"للتفاصيل: /analysis",
             reply_markup=KB,
         )

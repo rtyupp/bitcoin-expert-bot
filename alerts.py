@@ -27,48 +27,53 @@ def _write_last(ts: float) -> None:
         logging.exception("تعذّر حفظ توقيت آخر تنبيه")
 
 
-def is_catch(report: analysis.Report) -> bool:
-    """صيدة = توصية بقناعة قوية تتجاوز العتبة."""
-    return abs(report.score) >= config.SIGNAL_THRESHOLD
-
-
-def _alert_text(report: analysis.Report) -> str:
-    icon = "🟢 صيدة شراء!" if report.score > 0 else "🔴 صيدة بيع!"
-    return (
-        f"🚨 <b>{icon}</b>\n\n"
-        f"💰 السعر: <b>${report.price:,.0f}</b>\n"
-        f"📈 التوصية: <b>{report.recommendation}</b> (ثقة {report.confidence}%)\n"
-        f"🎯 النقاط: <code>{report.score:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})\n"
-        f"🛡 وقف خسارة مقترح: <code>${report.price - 2 * report.atr:,.0f}</code>\n\n"
-        "الأسباب:\n"
-        + "\n".join(f"• {r}" for r in report.reasons)
-        + "\n\n⚠️ <i>ليست نصيحة مالية.</i>"
-    )
+def _alert_text_multi(m: dict) -> str:
+    combined = m["combined"]
+    r1h = m["reports"].get("1h")
+    icon = "🟢 صيدة شراء!" if combined > 0 else "🔴 صيدة بيع!"
+    lines = [f"🚨 <b>{icon}</b>", ""]
+    if r1h:
+        lines.append(f"💰 السعر: <b>${r1h.price:,.0f}</b>")
+    lines.append(f"📈 الحكم (موزون): <b>{analysis.verdict(combined)}</b> (ثقة {analysis.confidence_pct(combined)}%)")
+    lines.append(f"🎯 النقاط: <code>{combined:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})")
+    lines.append(f"🤝 توافق الأطر: {m['agreement']}/{m['total']}")
+    lines.append("")
+    lines.append("الأطر الزمنية:")
+    for tf, r in m["reports"].items():
+        icon_tf = "🟢" if r.score >= 2 else ("🔴" if r.score <= -2 else "🟡")
+        lines.append(f"  {icon_tf} {tf}: {r.recommendation} ({r.score:+.1f})")
+    if r1h:
+        lines.append(f"\n🛡 وقف خسارة مقترح: <code>${r1h.price - 2 * r1h.atr:,.0f}</code>")
+    lines.append("\n⚠️ <i>ليست نصيحة مالية.</i>")
+    return "\n".join(lines)
 
 
 async def check_and_alert(bot, target: int | None = None) -> dict:
-    """يفحص التوصية ويرسل تنبيهاً إذا كانت صيدة قوية (مع فترة تهدئة)."""
+    """يفحص التوصية (متعدد الأطر + توافق) ويرسل تنبيهاً عند صيدة قوية (مع تهدئة)."""
     target = target or config.ADMIN_CHAT_ID
     if target is None:
         return {"sent": False, "reason": "no_chat_id"}
     try:
-        report = await asyncio.to_thread(analysis.analyze)
+        m = await asyncio.to_thread(analysis.analyze_multi)
     except Exception as e:  # noqa: BLE001
         return {"sent": False, "reason": f"analysis_failed: {e}"}
 
-    if not is_catch(report):
-        return {"sent": False, "reason": "weak_signal", "score": report.score}
+    combined = m["combined"]
+    if abs(combined) < config.SIGNAL_THRESHOLD:
+        return {"sent": False, "reason": "weak_signal", "score": combined}
+    if m["agreement"] < config.SIGNAL_MIN_AGREEMENT:
+        return {"sent": False, "reason": "no_confluence", "score": combined, "agreement": m["agreement"]}
 
     now = time.time()
     if now - _read_last() < config.SIGNAL_COOLDOWN_MIN * 60:
-        return {"sent": False, "reason": "cooldown", "score": report.score}
+        return {"sent": False, "reason": "cooldown", "score": combined}
 
     _write_last(now)
     try:
-        await bot.send_message(target, _alert_text(report))
-        return {"sent": True, "score": report.score}
+        await bot.send_message(target, _alert_text_multi(m))
+        return {"sent": True, "score": combined, "agreement": m["agreement"]}
     except Exception as e:  # noqa: BLE001
-        return {"sent": False, "reason": f"send_failed: {e}", "score": report.score}
+        return {"sent": False, "reason": f"send_failed: {e}", "score": combined}
 
 
 async def watcher_loop(bot) -> None:
