@@ -12,6 +12,7 @@ except Exception:  # noqa: BLE001
 import asyncio
 import logging
 import secrets
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from aiohttp import web
@@ -74,10 +75,10 @@ def section_kb(asset: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🧭 القرار"), KeyboardButton(text="📊 التحليل")],
-            [KeyboardButton(text="🕯️ الشارت"), KeyboardButton(text="🛡 خطة الصفقة")],
-            [KeyboardButton(text="🤖 النموذج"), KeyboardButton(text="📐 فيبوناتشي")],
-            [KeyboardButton(text="⏰ تنبيه سعر"), KeyboardButton(text="⚙️ الإعدادات")],
-            [KeyboardButton(text="🔀 تغيير الأصل")],
+            [KeyboardButton(text="🕯️ الشارت"), KeyboardButton(text="💰 السعر اللحظي")],
+            [KeyboardButton(text="🛡 خطة الصفقة"), KeyboardButton(text="🤖 النموذج")],
+            [KeyboardButton(text="📐 فيبوناتشي"), KeyboardButton(text="⏰ تنبيه سعر")],
+            [KeyboardButton(text="⚙️ الإعدادات"), KeyboardButton(text="🔀 تغيير الأصل")],
         ],
         resize_keyboard=True,
         input_field_placeholder=f"قسم {name} — اختر أمراً",
@@ -252,16 +253,26 @@ async def cmd_ml(m: Message):
 
 
 @router.message(Command("price"))
+@router.message(F.text == "💰 السعر اللحظي")
 async def cmd_price(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     key = _sec(m.chat.id)
     cfg = assets.get(key)
     try:
-        price, change, exchange = await asyncio.to_thread(analysis.ticker, cfg["symbol"])
-        txt = f"{cfg['emoji']} <b>{cfg['name']}</b>\n\n$<b>{price:,.2f}</b>\n"
-        if change is not None:
-            txt += f"التغير 24س: {'🟢' if change >= 0 else '🔴'} {change:+.2f}%\n"
-        txt += f"\n🏦 <code>{exchange}</code>"
+        t = await asyncio.to_thread(analysis.live_ticker, cfg["symbol"])
+        fresh = max(0, int(time.time() - t["ts"]))
+        txt = (
+            f"{cfg['emoji']} <b>{cfg['name']} — سعر لحظي</b>\n\n"
+            f"$<b>{t['price']:,.2f}</b>\n"
+        )
+        if t["change"] is not None:
+            txt += f"التغير 24س: {'🟢' if t['change'] >= 0 else '🔴'} {t['change']:+.2f}%\n"
+        if t["high"] and t["low"]:
+            txt += f"أعلى/أدنى 24س: <code>{t['high']:,.2f} / {t['low']:,.2f}</code>\n"
+        txt += (
+            f"\n🕐 <i>تحديث قبل {fresh} ثانية</i> · 🏦 <code>{t['exchange']}</code>\n"
+            "اضغط 🔄 لإعادة التحديث"
+        )
         await m.answer(txt, reply_markup=kb(m.chat.id))
     except Exception as e:  # noqa: BLE001
         await m.answer(f"❌ تعذّر جلب السعر: {e}", reply_markup=kb(m.chat.id))
@@ -300,12 +311,13 @@ async def _send_chart(m: Message, key: str) -> None:
     """يبني شارت الشموع ويرسله — بقفل واحد لتجنّب ارتفاع الذاكرة."""
     cfg = assets.get(key)
     try:
+        live = await asyncio.to_thread(analysis.live_ticker, cfg["symbol"])
         async with _chart_lock:
             df = await asyncio.to_thread(charts.fetch_4h, cfg["symbol"], 20)
             ana = await asyncio.to_thread(charts.analyze_chart, df, key)
-            png = await asyncio.to_thread(charts.plot_chart, df, ana, cfg["symbol"])
+            png = await asyncio.to_thread(charts.plot_chart, df, ana, cfg["symbol"], live["price"])
         dec = await asyncio.to_thread(analysis.decision, key)
-        msg = charts.short_message(ana, cfg["symbol"], dec)
+        msg = charts.short_message(ana, cfg["symbol"], dec, live)
         _trim_memory()
         # aiogram 3 يطلب InputFile — الـ bytes الخام تُرفض
         photo = BufferedInputFile(png, filename=f"{cfg['key']}_chart.png")

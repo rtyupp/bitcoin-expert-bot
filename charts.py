@@ -123,13 +123,13 @@ def analyze_chart(df: pd.DataFrame, asset: str = "btc") -> dict:
     return out
 
 
-def plot_chart(df: pd.DataFrame, a: dict, symbol: str) -> bytes:
+def plot_chart(df: pd.DataFrame, a: dict, symbol: str, live_price: float | None = None) -> bytes:
     """شارت الشموع اليابانية (نص إنجليزي داخل الصورة — Pillow لا يشكّل العربية)."""
-    return chartimg.render(df, a, symbol, strategy=a.get("strategy_en", ""))
+    return chartimg.render(df, a, symbol, strategy=a.get("strategy_en", ""), live_price=live_price)
 
 
-def short_message(a: dict, symbol: str, dec: dict | None = None) -> str:
-    """رسالة موجزة: الحالة الآن + آخر إشارة (مع تحذير لو قديمة)."""
+def short_message(a: dict, symbol: str, dec: dict | None = None, live: dict | None = None) -> str:
+    """رسالة موجزة: الحالة الآن + السعر اللحظي + آخر إشارة (مع تحذير لو قديمة)."""
     name = a.get("asset_name", symbol)
 
     head = []
@@ -145,6 +145,12 @@ def short_message(a: dict, symbol: str, dec: dict | None = None) -> str:
         head.append("")
     else:
         head.append(f"<b>{name}</b> — {symbol}")
+        head.append("")
+
+    if live:
+        head.append(f"💰 <b>السعر اللحظي: ${live['price']:,.2f}</b>")
+        if live.get("change") is not None:
+            head.append(f"   24س: {'🟢' if live['change'] >= 0 else '🔴'} {live['change']:+.2f}%")
         head.append("")
 
     if not a["first_entry"]:
@@ -179,7 +185,6 @@ def short_message(a: dict, symbol: str, dec: dict | None = None) -> str:
         lines.append(f"⏳ عمر الإشارة: {age} ساعة")
     lines += [
         "",
-        f"💰 الحالي: <code>{a['current_price']:,.2f}</code>",
         "⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>",
     ]
     return "\n".join(lines)

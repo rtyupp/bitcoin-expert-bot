@@ -64,7 +64,7 @@ def _label(draw, x, y, text, color, font, right=False, pad=5):
     draw.text((x0 + pad, y), text, font=font, fill=color)
 
 
-def render(df, a: dict, symbol: str, strategy: str = "") -> bytes:
+def render(df, a: dict, symbol: str, strategy: str = "", live_price: float | None = None) -> bytes:
     """يرسم شارت الشموع ويرجع PNG bytes."""
     n = len(df)
     o = [float(x) for x in df["open"]]
@@ -104,6 +104,8 @@ def render(df, a: dict, symbol: str, strategy: str = "") -> bytes:
     for key in ("stop_loss", "tp1"):
         if a.get(key):
             vals.append(float(a[key]))
+    if live_price:
+        vals.append(float(live_price))
     pmin, pmax = min(vals), max(vals)
     pad = (pmax - pmin) * 0.06 or 1
     pmin -= pad
@@ -187,6 +189,12 @@ def render(df, a: dict, symbol: str, strategy: str = "") -> bytes:
         near_right = x > W - PR - 95
         _label(d, x + (11 if not near_right else -11), y - 16,
                f"ADD {se['price']:,.0f}", GOLD, f_s, right=near_right)
+
+    # السعر اللحظي — خط "الآن"
+    if live_price:
+        y = Y(float(live_price))
+        _dashed(d, [(PL, y), (W - PR, y)], WHITE, 2, dash=3, gap=3)
+        _label(d, W - PR - 6, y - 19, f"NOW {live_price:,.2f}", WHITE, f_s, right=True)
 
     # الحجم
     vmax = max(v) if v else 1

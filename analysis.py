@@ -78,6 +78,33 @@ def ticker(symbol: str) -> tuple[float, float | None, str]:
     raise RuntimeError("تعذّر جلب السعر من كل المنصات")
 
 
+def live_ticker(symbol: str) -> dict:
+    """سعر لحظي كامل (آخر صفقة) + أعلى/أدنى 24س + طابع زمني."""
+    import time
+
+    import ccxt
+
+    global _GOOD_EXCHANGE
+    for eid in _order():
+        try:
+            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
+            t = ex.fetch_ticker(symbol)
+            if not t.get("last") and not t.get("close"):
+                continue
+            _GOOD_EXCHANGE = eid
+            return {
+                "price": float(t["last"] or t["close"]),
+                "change": t.get("percentage"),
+                "high": float(t.get("high") or 0),
+                "low": float(t.get("low") or 0),
+                "ts": time.time(),
+                "exchange": eid,
+            }
+        except Exception:  # noqa: BLE001
+            continue
+    raise RuntimeError("تعذّر جلب السعر اللحظي من كل المنصات")
+
+
 def indicators(df):
     """كل المؤشرات المطلوبة (تُحسب مرة واحدة لكل تحليل)."""
     import ta
