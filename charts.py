@@ -1,24 +1,32 @@
-"""رسم شارتات التحليل مع تحديد نقاط الصيد (أول/ثاني)."""
+"""تحليل الشارت وتحديد نقاط الصيد — الرسم عبر chartimg (Pillow، خفيف)."""
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import io
-from datetime import datetime
 
 import ccxt
 import ta
 
+import chartimg
+
+
+_EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
+
 
 def fetch_4h(symbol: str, days: int = 30):
-    """جلب بيانات 4h."""
-    ex = ccxt.binance()
-    limit = min(days * 6, 1500)
-    raw = ex.fetch_ohlcv(symbol, "4h", limit=limit)
-    df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
-    df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-    return df
+    """جلب بيانات 4h مع تبديل المنصات تلقائياً عند الحجب + مهلة زمنية."""
+    limit = min(days * 6, 300)
+    errors = []
+    for eid in _EXCHANGES:
+        try:
+            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 15000})
+            raw = ex.fetch_ohlcv(symbol, "4h", limit=limit)
+            if not raw:
+                raise ValueError("لا بيانات")
+            df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
+            df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+            return df
+        except Exception as err:  # noqa: BLE001
+            errors.append(f"{eid}:{type(err).__name__}")
+    raise RuntimeError("تعذّر جلب البيانات: " + "; ".join(errors))
 
 
 def analyze_chart(df: pd.DataFrame) -> dict:
@@ -98,81 +106,8 @@ def analyze_chart(df: pd.DataFrame) -> dict:
 
 
 def plot_chart(df: pd.DataFrame, analysis: dict, symbol: str) -> bytes:
-    """رسم الشارت مع تحديد نقاط الصيد، إرجاع PNG كـ bytes."""
-    c = df["close"]
-    h, l, v = df["high"], df["low"], df["volume"]
-    atr = ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range()
-    bb = ta.volatility.BollingerBands(c, 20, 2)
-    up, mid, lo = bb.bollinger_hband(), bb.bollinger_mavg(), bb.bollinger_lband()
-
-    fig, axes = plt.subplots(2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}, sharex=True)
-    ax_price, ax_vol = axes
-
-    # السعر
-    ax_price.plot(df["ts"], c, color="white", linewidth=1, label="Close")
-    ax_price.plot(df["ts"], up, color="cyan", linewidth=0.8, linestyle="--", label="BB Upper")
-    ax_price.plot(df["ts"], mid, color="yellow", linewidth=0.8, linestyle="-.", label="BB Mid")
-    ax_price.plot(df["ts"], lo, color="red", linewidth=0.8, linestyle="--", label="BB Lower")
-
-    ax_price.set_ylabel("السعر (USDT)", color="#bdbdbd", fontsize=9)
-    ax_price.tick_params(colors="#bdbdbd")
-    ax_price.legend(loc="upper left", fontsize=7, framealpha=0.25, labelcolor="#f7f7f7")
-    ax_price.grid(alpha=0.15)
-
-    # رسم نقاط الصيد
-    if analysis["first_entry"]:
-        fe = analysis["first_entry"]
-        color = "#69f0ae" if analysis["direction"] == "buy" else "#ffab40"
-        mk = "^" if analysis["direction"] == "buy" else "v"
-        ax_price.scatter(fe["ts"], fe["price"], s=120, c=color, marker=mk, zorder=6, edgecolors="black", linewidths=1.2, label="أول صيد")
-        ax_price.annotate(f"أول صيد {fe['price']:,.0f}", (fe["ts"], fe["price"]),
-                          textcoords="offset points", xytext=(0, 14 if analysis["direction"] == "buy" else -22),
-                          fontsize=8, color="white", ha="center")
-
-    if analysis["second_entry"]:
-        se = analysis["second_entry"]
-        ax_price.scatter(se["ts"], se["price"], s=100, c="#ffd700", marker="o", zorder=6, edgecolors="black", linewidths=1.2, label="ثاني صيد")
-        ax_price.annotate(f"ثاني صيد {se['price']:,.0f}", (se["ts"], se["price"]),
-                          textcoords="offset points", xytext=(0, 14 if analysis["direction"] == "buy" else -22),
-                          fontsize=8, color="white", ha="center")
-
-    if analysis["stop_loss"]:
-        ax_price.axhline(analysis["stop_loss"], color="#ef5350", ls=":", lw=1.2, alpha=0.8)
-        ax_price.text(df["ts"].iloc[-1], analysis["stop_loss"], f" وقف {analysis['stop_loss']:,.0f}",
-                      color="#ef5350", fontsize=7, va="center", ha="right")
-
-    if analysis["tp1"]:
-        tpcol = "#69f0ae" if analysis["direction"] == "buy" else "#ffab40"
-        ax_price.axhline(analysis["tp1"], color=tpcol, ls=":", lw=1.2, alpha=0.8)
-        ax_price.text(df["ts"].iloc[-1], analysis["tp1"], f" هدف1 {analysis['tp1']:,.0f}",
-                      color=tpcol, fontsize=7, va="center", ha="right")
-
-    # السعر الأخير
-    plt.setp(ax_price.xaxis.get_majorticklabels(), visible=False)
-    ax_price.set_title(f"{symbol} — شارت 4 ساعات", color="#f7f7f7", fontsize=11)
-    last = float(c.iloc[-1])
-    chg = (last / float(c.iloc[-2]) - 1) * 100
-    ax_price.text(0.01, 0.02, f"{last:,.0f} USDT  ({chg:+.2f}%)",
-                  transform=ax_price.transAxes, color="#f7f7f7", fontsize=9,
-                  va="bottom", bbox=dict(boxstyle="round", facecolor="#212121", alpha=0.8))
-
-    # الحجم
-    ax_vol.bar(df["ts"], v, color="#78909c", alpha=0.7)
-    ax_vol.set_ylabel("الحجم", color="#bdbdbd", fontsize=9)
-    ax_vol.tick_params(colors="#bdbdbd")
-    ax_vol.grid(alpha=0.15)
-
-    for ax in axes:
-        ax.set_facecolor("#121212")
-    fig.set_facecolor("#121212")
-
-    plt.tight_layout()
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=110, facecolor="#121212", edgecolor="none", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
+    """رسم الشارت عبر chartimg (Pillow) — ذاكرة منخفضة."""
+    return chartimg.render(df, analysis, symbol)
 
 
 def short_message(analysis: dict, symbol: str) -> str:

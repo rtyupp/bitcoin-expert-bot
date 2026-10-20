@@ -47,6 +47,9 @@ KB = ReplyKeyboardMarkup(
     input_field_placeholder="اضغط زر أو اكتب أمراً مثل /alert",
 )
 
+# قفل واحد لبناء الشارت — يمنع تراكم الطلبات وارتفاع الذاكرة على الخطة المجانية
+_chart_lock = asyncio.Lock()
+
 @router.message(Command("fibo"))
 @router.message(F.text == "📐 الفوربيناتشي")
 async def cmd_fibo(m: Message):
@@ -452,21 +455,7 @@ async def cmd_gold(m: Message):
         await m.answer("❌ البوت غير مُفعّل — أضف BOT_TOKEN في Render.", reply_markup=KB)
         return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    try:
-        df = await asyncio.to_thread(charts.fetch_4h, "PAXG/USDT", 30)
-        ana = await asyncio.to_thread(charts.analyze_chart, df)
-        if ana["first_entry"]:
-            png = await asyncio.to_thread(charts.plot_chart, df, ana, "PAXG/USDT")
-            await m.answer_photo(
-                photo=png,
-                caption=charts.short_message(ana, "PAXG/USDT"),
-                reply_markup=KB,
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await m.answer(charts.short_message(ana, "PAXG/USDT"), reply_markup=KB)
-    except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ فشل تحليل الذهب: {e}", reply_markup=KB)
+    await _send_chart(m, "PAXG/USDT")
 
 
 @router.message(Command("chart"))
@@ -476,21 +465,25 @@ async def cmd_chart(m: Message):
         await m.answer("❌ البوت غير مُفعّل.", reply_markup=KB)
         return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    await _send_chart(m, "BTC/USDT")
+
+
+async def _send_chart(m: Message, symbol: str) -> None:
+    """يبني الشارت ويرسله — بقفل واحد لتجنّب ارتفاع الذاكرة عند الطلبات المتزامنة."""
     try:
-        df = await asyncio.to_thread(charts.fetch_4h, "BTC/USDT", 30)
-        ana = await asyncio.to_thread(charts.analyze_chart, df)
-        if ana["first_entry"]:
-            png = await asyncio.to_thread(charts.plot_chart, df, ana, "BTC/USDT")
-            await m.answer_photo(
-                photo=png,
-                caption=charts.short_message(ana, "BTC/USDT"),
-                reply_markup=KB,
-                parse_mode=ParseMode.HTML,
-            )
+        async with _chart_lock:
+            df = await asyncio.to_thread(charts.fetch_4h, symbol, 30)
+            ana = await asyncio.to_thread(charts.analyze_chart, df)
+            msg = charts.short_message(ana, symbol)
+            png = None
+            if ana["first_entry"]:
+                png = await asyncio.to_thread(charts.plot_chart, df, ana, symbol)
+        if png:
+            await m.answer_photo(photo=png, caption=msg, reply_markup=KB, parse_mode=ParseMode.HTML)
         else:
-            await m.answer(charts.short_message(ana, "BTC/USDT"), reply_markup=KB)
+            await m.answer(msg, reply_markup=KB)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ فشل تحليل الرسم البياني: {e}", reply_markup=KB)
+        await m.answer(f"❌ تعذّر بناء الشارت: {e}", reply_markup=KB)
 
 
 # ── مساعدات ────────────────────────────────────────────────────
@@ -532,6 +525,26 @@ async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
 
+async def memcheck(request: web.Request) -> web.Response:
+    """تشخيص استهلاك الذاكرة — يكشف خطر OOM على الخطة المجانية (512MB)."""
+    try:
+        vals = {}
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(("VmRSS:", "VmHWM:", "VmPeak:")):
+                    k, v = line.split(":", 1)
+                    vals[k] = v.strip()
+        return web.Response(
+            text=(
+                f"الحالي (RSS): {vals.get('VmRSS', '?')}\n"
+                f"الذروة (Peak): {vals.get('VmHWM', '?')}\n"
+                f"الحد الأقصى (VmPeak): {vals.get('VmPeak', '?')}\n"
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        return web.Response(status=500, text=f"غير متاح: {e}")
+
+
 async def cron(request: web.Request) -> web.Response:
     """يستدعيه Render Cron Job لإرسال الملخص اليومي."""
     if bot is None:
@@ -567,6 +580,7 @@ async def main():
             # بدون توكن: نخدم /health فقط حتى يضيف المستخدم BOT_TOKEN في لوحة Render
             app = web.Application()
             app.router.add_get("/health", health)
+            app.router.add_get("/mem", memcheck)
             app.router.add_post("/cron", cron)
             app.router.add_post("/signal-check", signal_check)
             runner = web.AppRunner(app)
@@ -587,6 +601,7 @@ async def main():
         )
         handler.register(app, path=config.WEBHOOK_PATH)
         app.router.add_get("/health", health)
+        app.router.add_get("/mem", memcheck)
         app.router.add_post("/cron", cron)
         app.router.add_post("/signal-check", signal_check)
         setup_application(app, dp, bot=bot)
