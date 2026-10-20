@@ -7,3 +7,4 @@ venv/
 .vscode/
 price_alerts.json
 last_alert.txt
+settings.json

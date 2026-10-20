@@ -420,10 +420,7 @@ def multi_summary() -> str:
 
 
 def breakout_signal(timeframe: str = "4h") -> dict | None:
-    """كسر بولينجر مع تأكيد حجم (×1.5) — أقوى إشارة دخول من الاختبار التاريخي (فوز 54%).
-
-    يرجع None إذا لا يوجد اختراق، أو dict بجهة الاختراق وتفاصيله.
-    """
+    """كسر بولينجر مع تأكيد حجم (×1.5) — أقوى إشارة دخول من الاختبار التاريخي (فوز 54%)."""
     import ta
 
     df, exchange = fetch_ohlcv(timeframe, limit=250)
@@ -442,3 +439,39 @@ def breakout_signal(timeframe: str = "4h") -> dict | None:
         return {"direction": "short", "price": price, "vol_ratio": round(vol_ratio, 1),
                 "timeframe": timeframe, "exchange": exchange}
     return None
+
+
+def risk_plan(entry: float, direction: str, atr: float, account_size: float = 0.0, risk_pct: float = 1.0) -> dict:
+    """خطة إدارة مخاطر كاملة: وقف (2×ATR) + 3 أهداف (1:1 / 1:2 / 1:3) + حجم الصفقة."""
+    sign = 1 if direction == "long" else -1
+    stop_dist = 2.0 * atr
+    stop = entry - sign * stop_dist
+    targets = {
+        "TP1 (1:1)": entry + sign * 2.0 * atr,
+        "TP2 (1:2)": entry + sign * 4.0 * atr,
+        "TP3 (1:3)": entry + sign * 6.0 * atr,
+    }
+    plan = {
+        "entry": entry,
+        "direction": direction,
+        "atr": atr,
+        "stop": stop,
+        "stop_dist": stop_dist,
+        "targets": targets,
+    }
+    if account_size > 0:
+        risk_amount = account_size * (risk_pct / 100.0)
+        qty = risk_amount / stop_dist if stop_dist else 0.0
+        max_qty = account_size / entry if entry else 0.0
+        capped = qty > max_qty
+        if capped:
+            qty = max_qty
+        plan.update({
+            "account_size": account_size,
+            "risk_pct": risk_pct,
+            "risk_amount": risk_amount,
+            "qty": qty,
+            "qty_usd": qty * entry,
+            "capped": capped,
+        })
+    return plan

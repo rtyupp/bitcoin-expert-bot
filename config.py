@@ -18,6 +18,10 @@ if not WEBHOOK_URL and RENDER_EXTERNAL_URL:
     WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 WEBHOOK_MODE = bool(WEBHOOK_URL)
 
+# إدارة المخاطر
+ACCOUNT_SIZE = float(os.environ.get("ACCOUNT_SIZE", "0"))  # حجم المحفظة بالدولار (0 = غير مضبوط)
+RISK_PERCENT = float(os.environ.get("RISK_PERCENT", "1.0"))  # نسبة المخاطرة لكل صفقة
+
 # DeepSeek API (اختياري)
 DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"

@@ -17,6 +17,7 @@ import alerts
 import analysis
 import config
 import data_feeds
+import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -38,6 +39,7 @@ KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="💰 السعر"), KeyboardButton(text="😱 الخوف والطمع")],
         [KeyboardButton(text="⛓️ أون-تشين"), KeyboardButton(text="🌍 السوق")],
         [KeyboardButton(text="🤖 الذكاء الاصطناعي"), KeyboardButton(text="⏰ تنبيه سعر")],
+        [KeyboardButton(text="🛡 خطة الصفقة"), KeyboardButton(text="⚙️ الإعدادات")],
     ],
     resize_keyboard=True,
     input_field_placeholder="اضغط زر أو اكتب أمراً مثل /alert",
@@ -74,6 +76,8 @@ async def cmd_help(m: Message):
         "/alert — تنبيه سعر (مثال: /alert 85000)\n"
         "/alerts — تنبيهاتك الحالية\n"
         "/delalerts — حذف كل التنبيهات\n"
+        "/setup — ضبط محفظتك (مثال: /setup 10000)\n"
+        "/plan — خطة الصفقة (كم تشتري + وقف + أهداف)\n"
         "/myid — معرف المحادثة",
         reply_markup=KB,
     )
@@ -311,6 +315,103 @@ async def cmd_alerts(m: Message):
 async def cmd_delalerts(m: Message):
     n = alerts.clear_alerts(m.chat.id)
     await m.answer(f"🗑 حذفت {n} تنبيه سعر.", reply_markup=KB)
+
+
+# ── إدارة المخاطر ─────────────────────────────────────────────
+
+@router.message(Command("setup"))
+async def cmd_setup(m: Message):
+    parts = m.text.split()
+    if len(parts) < 2:
+        await _setup_help(m)
+        return
+    raw = parts[1].replace(",", "").replace("$", "").replace("k", "000").replace("K", "000")
+    try:
+        amount = float(raw)
+    except ValueError:
+        await m.answer("❌ مبلغ غير صحيح. مثال: <code>/setup 10000</code>", reply_markup=KB)
+        return
+    settings.set_account(amount)
+    rp = settings.risk_pct()
+    if len(parts) >= 3:
+        try:
+            rp = float(parts[2])
+            settings.set_risk(rp)
+        except ValueError:
+            pass
+    await m.answer(
+        f"⚙️ <b>تم حفظ الإعدادات</b>\n\n"
+        f"💼 رأس المال: <code>${amount:,.0f}</code>\n"
+        f"🎯 نسبة المخاطرة: <code>{rp:.1f}%</code> لكل صفقة\n\n"
+        f"الآن اضغط 🛡 خطة الصفقة أو أرسل /plan",
+        reply_markup=KB,
+    )
+
+
+@router.message(F.text == "⚙️ الإعدادات")
+async def txt_setup(m: Message):
+    await _setup_help(m)
+
+
+async def _setup_help(m: Message):
+    acct = settings.account_size()
+    rp = settings.risk_pct()
+    await m.answer(
+        f"⚙️ <b>إدارة المخاطر</b>\n\n"
+        f"💼 رأس المال الحالي: <code>${acct:,.0f}</code>{' (غير مضبوط)' if acct == 0 else ''}\n"
+        f"🎯 نسبة المخاطرة: <code>{rp:.1f}%</code> لكل صفقة\n\n"
+        f"للتغيير:\n"
+        f"<code>/setup 10000</code> — رأس مال 10 آلاف\n"
+        f"<code>/setup 10000 2</code> — مع مخاطرة 2%\n\n"
+        f"ثم اضغط 🛡 خطة الصفقة",
+        reply_markup=KB,
+    )
+
+
+@router.message(Command("plan"))
+@router.message(F.text == "🛡 خطة الصفقة")
+async def cmd_plan(m: Message):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        report = await asyncio.to_thread(analysis.analyze)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر التحليل: {e}", reply_markup=KB)
+        return
+    direction = "long" if report.score > 0 else "short"
+    plan = analysis.risk_plan(
+        report.price, direction, report.atr, settings.account_size(), settings.risk_pct()
+    )
+    await m.answer(_plan_text(report, plan), reply_markup=KB)
+
+
+def _plan_text(report, plan) -> str:
+    dir_label = "شراء 🟢" if plan["direction"] == "long" else "بيع 🔴"
+    sign = 1 if plan["direction"] == "long" else -1
+    lines = [
+        "🛡 <b>خطة الصفقة الكاملة</b>\n",
+        f"📊 الإشارة: <b>{dir_label}</b> (نقاط {report.score:+.1f})",
+        f"💰 الدخول: <code>${plan['entry']:,.0f}</code>",
+        f"🛑 وقف الخسارة: <code>${plan['stop']:,.0f}</code> (2×ATR)",
+        "",
+        "🎯 <b>أهداف جني الربح:</b>",
+    ]
+    for name, price in plan["targets"].items():
+        pct = sign * (price - plan["entry"]) / plan["entry"] * 100
+        lines.append(f"  • {name}: <code>${price:,.0f}</code> ({pct:+.1f}%)")
+    lines.append("")
+    if "qty" in plan:
+        lines.append("💼 <b>حجم الصفقة:</b>")
+        lines.append(
+            f"  • رأس المال: ${plan['account_size']:,.0f} | مخاطرة {plan['risk_pct']:.1f}% = ${plan['risk_amount']:,.0f}"
+        )
+        lines.append(f"  • الكمية: <code>{plan['qty']:.5f} BTC</code> (≈ ${plan['qty_usd']:,.0f})")
+        if plan.get("capped"):
+            lines.append("  ⚠️ الصفقة أكبر من محفظتك — خُفّضت الكمية لأقصى ما تقدر.")
+    else:
+        lines.append("💡 <i>اضبط محفظتك بـ /setup عشان أعطيك الكمية بالضبط.</i>")
+    lines.append("")
+    lines.append("⚠️ <i>ليست نصيحة مالية.</i>")
+    return "\n".join(lines)
 
 
 # ── مساعدات ────────────────────────────────────────────────────
