@@ -1,18 +1,16 @@
-"""تحليل الشارت وتحديد نقاط الصيد — الرسم عبر chartimg (Pillow، خفيف)."""
-import pandas as pd
+"""تحليل الشارت ونقاط الصيد لكل أصل (استراتيجية الأصل نفسها) + رسم الشموع."""
 import numpy as np
+import pandas as pd
 
-import ta
-
+import assets
 import chartimg
-
 
 _EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
 
 
-def fetch_4h(symbol: str, days: int = 30):
-    """جلب بيانات 4h مع تبديل المنصات تلقائياً عند الحجب + مهلة زمنية."""
-    import ccxt  # استيراد مؤجّل — ccxt ثقيل (~50MB) ولا نحتاجه إلا عند طلب شارت
+def fetch_4h(symbol: str, days: int = 20):
+    """جلب شموع 4h مع تبديل المنصات تلقائياً عند الحجب."""
+    import ccxt
 
     limit = min(days * 6, 300)
     errors = []
@@ -30,111 +28,135 @@ def fetch_4h(symbol: str, days: int = 30):
     raise RuntimeError("تعذّر جلب البيانات: " + "; ".join(errors))
 
 
-def analyze_chart(df: pd.DataFrame) -> dict:
-    """تحليل الرسم البياني وإرجاع نقاط الصيد."""
-    c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
-    atr = ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range()
-    bb = ta.volatility.BollingerBands(c, 20, 2)
-    up, mid, lo = bb.bollinger_hband(), bb.bollinger_mavg(), bb.bollinger_lband()
-    vol20 = v.rolling(20).mean()
+def _ind(df):
+    import analysis
 
-    # الإشارة: كسر أعلى/أدنى بولينجر + حجم
-    breakout_buy = (c > up) & (v > 1.5 * vol20)
-    breakout_short = (c < lo) & (v > 1.5 * vol20)
+    return analysis.indicators(df)
 
-    buy_idx = np.where(breakout_buy.values)[0]
-    sell_idx = np.where(breakout_short.values)[0]
-    buy_last = int(buy_idx[-1]) if len(buy_idx) else -1
-    sell_last = int(sell_idx[-1]) if len(sell_idx) else -1
+
+def signal_series(df, ind, cfg) -> np.ndarray:
+    """سلسلة إشارات استراتيجية الأصل لكل شمعة (نفس منطق التنبيه)."""
+    c = df["close"].values
+    n = len(df)
+    out = np.zeros(n)
+
+    if cfg["strategy"] == "bb_vol":
+        up = ind["bb_up"].values
+        lo = ind["bb_lo"].values
+        v20 = pd.Series(ind["vol20"]).fillna(0).values
+        vol = df["volume"].values
+        mult = cfg["volume_mult"]
+        with np.errstate(invalid="ignore"):
+            out = np.where((c > up) & (vol > mult * v20), 1.0, out)
+            out = np.where((c < lo) & (vol > mult * v20), -1.0, out)
+    else:  # macd_ema200
+        m = ind["macd"].macd().values
+        s = ind["macd"].macd_signal().values
+        e = ind["ema200"].values if ind["ema200"] is not None else np.full(n, np.nan)
+        above = c > e
+        mu, su = np.roll(m, 1), np.roll(s, 1)
+        out = np.where((m > s) & (mu <= su) & above, 1.0, out)
+        out = np.where((m < s) & (mu >= su) & (~above), -1.0, out)
+        out = np.where((out == 0) & (m > s) & above, 0.5, out)
+        out = np.where((out == 0) & (m < s) & (~above), -0.5, out)
+
+    out[:20] = 0
+    return out
+
+
+def analyze_chart(df: pd.DataFrame, asset: str = "btc") -> dict:
+    """أحدث إشارة قوية لاستراتيجية الأصل + صيد ثانٍ (رجعة للمتوسط) + وقف/هدف."""
+    cfg = assets.get(asset)
+    ind = _ind(df)
+    ser = signal_series(df, ind, cfg)
+    c = df["close"]
+    atr = ind["atr"]
+    mid = ind["bb_mid"]
+
+    strong = np.where(np.abs(ser) >= 1.0)[0]
+    idx = int(strong[-1]) if len(strong) else -1
     direction = None
-    idx = -1
-    if buy_last > sell_last:
-        direction, idx = "buy", buy_last
-    elif sell_last > buy_last:
-        direction, idx = "sell", sell_last
+    if idx >= 0:
+        direction = "buy" if ser[idx] > 0 else "sell"
+    else:
+        weak = np.where(np.abs(ser) >= 0.5)[0]
+        if len(weak):
+            idx = int(weak[-1])
+            direction = "buy" if ser[idx] > 0 else "sell"
 
-    events = {
+    out = {
+        "asset": cfg["key"],
+        "asset_name": cfg["name"],
+        "strategy": cfg["strategy_name"],
+        "strategy_en": cfg["strategy_en"],
+        "rr": cfg["rr"],
         "current_price": float(c.iloc[-1]),
         "current_ts": df["ts"].iloc[-1],
         "first_entry": None,
         "second_entry": None,
         "stop_loss": None,
         "tp1": None,
-        "tp2": None,
         "direction": direction,
         "signal_age_hours": None,
+        "strength": 0.0,
     }
-
     if idx < 0 or idx >= len(df) - 1:
-        return events
+        return out
 
     d = 1 if direction == "buy" else -1
     entry = float(c.iloc[idx])
-    sd = float(atr.iloc[idx]) * 2
-    events["first_entry"] = {
-        "idx": int(idx),
-        "price": entry,
-        "ts": df["ts"].iloc[idx],
-        "type": "breakout",
-    }
-    events["stop_loss"] = entry - d * sd
-    events["tp1"] = entry + d * sd          # 1:1
-    events["tp2"] = entry + d * 2 * sd      # 1:2
-    events["signal_age_hours"] = int(
-        (df["ts"].iloc[-1] - df["ts"].iloc[idx]).total_seconds() / 3600
-    )
+    sd = float(atr.iloc[idx]) * cfg["stop_mult"]
+    out["first_entry"] = {"idx": idx, "price": entry, "ts": df["ts"].iloc[idx]}
+    out["stop_loss"] = entry - d * sd
+    out["tp1"] = entry + d * cfg["rr"] * sd
+    out["strength"] = float(ser[idx])
+    out["signal_age_hours"] = int((df["ts"].iloc[-1] - df["ts"].iloc[idx]).total_seconds() / 3600)
 
-    # الصيد الثاني: رجعة للمتوسط (MA20) بعد الكسر
+    # الصيد الثاني: رجعة السعر للمتوسط بعد الإشارة
     for j in range(idx + 1, min(idx + 12, len(df))):
         if direction == "buy" and c.iloc[j] <= mid.iloc[j]:
-            events["second_entry"] = {
-                "idx": int(j),
-                "price": float(c.iloc[j]),
-                "ts": df["ts"].iloc[j],
-                "type": "pullback",
-            }
+            out["second_entry"] = {"idx": j, "price": float(c.iloc[j]), "ts": df["ts"].iloc[j]}
             break
         if direction == "sell" and c.iloc[j] >= mid.iloc[j]:
-            events["second_entry"] = {
-                "idx": int(j),
-                "price": float(c.iloc[j]),
-                "ts": df["ts"].iloc[j],
-                "type": "pullback",
-            }
+            out["second_entry"] = {"idx": j, "price": float(c.iloc[j]), "ts": df["ts"].iloc[j]}
             break
-
-    return events
-
-
-def plot_chart(df: pd.DataFrame, analysis: dict, symbol: str) -> bytes:
-    """رسم الشارت عبر chartimg (Pillow) — ذاكرة منخفضة."""
-    return chartimg.render(df, analysis, symbol)
+    return out
 
 
-def short_message(analysis: dict, symbol: str) -> str:
-    """رسالة موجزة وواضحة بصيغة HTML (متوافقة مع ParseMode.HTML)."""
-    if not analysis["first_entry"]:
+def plot_chart(df: pd.DataFrame, a: dict, symbol: str) -> bytes:
+    """شارت الشموع اليابانية (نص إنجليزي داخل الصورة — Pillow لا يشكّل العربية)."""
+    return chartimg.render(df, a, symbol, strategy=a.get("strategy_en", ""))
+
+
+def short_message(a: dict, symbol: str) -> str:
+    """رسالة موجزة بصيغة HTML متوافقة مع ParseMode.HTML."""
+    name = a.get("asset_name", symbol)
+    if not a["first_entry"]:
         return (
-            f"📊 <b>{symbol}</b>\n\n"
+            f"📊 <b>{name}</b> — {symbol}\n\n"
+            f"🎯 الاستراتيجية: <b>{a.get('strategy', '—')}</b>\n"
             "لا توجد إشارة صيد حالياً.\n"
-            "انتظر كسر بولينجر مع حجم >= 1.5x."
+            "انتظر تحقق شروط الاستراتيجية."
         )
 
-    d = analysis["direction"]
-    fe = analysis["first_entry"]
-    se = analysis["second_entry"]
-    age = analysis["signal_age_hours"]
+    d = a["direction"]
+    fe, se = a["first_entry"], a["second_entry"]
+    age = a["signal_age_hours"]
+    icon = "🟢" if d == "buy" else "🔴"
+    word = "شراء" if d == "buy" else "بيع"
 
-    head = f"{'🟢' if d == 'buy' else '🔴'} <b>{symbol} — إشارة {'شراء' if d == 'buy' else 'بيع'}</b>"
-    lines = [head, ""]
-    lines.append(f"📍 <b>أول صيد:</b> <code>{fe['price']:,.0f}</code> ({fe['type']})")
+    lines = [
+        f"{icon} <b>{name} — إشارة {word}</b>",
+        f"🎯 {a.get('strategy', '')}",
+        "",
+        f"📍 <b>أول صيد:</b> <code>{fe['price']:,.2f}</code>",
+    ]
     if se:
-        lines.append(f"📍 <b>ثاني صيد:</b> <code>{se['price']:,.0f}</code> ({se['type']})")
-    lines.append(f"🛑 <b>وقف:</b> <code>{analysis['stop_loss']:,.0f}</code>")
-    lines.append(f"🎯 <b>هدف 1:</b> <code>{analysis['tp1']:,.0f}</code>")
+        lines.append(f"📍 <b>ثاني صيد:</b> <code>{se['price']:,.2f}</code>")
+    lines.append(f"🛑 <b>وقف:</b> <code>{a['stop_loss']:,.2f}</code>")
+    lines.append(f"🎯 <b>هدف:</b> <code>{a['tp1']:,.2f}</code> (1:{a['rr']:.0f})")
     if age is not None and age >= 6:
         lines.append(f"⏳ عمر الإشارة: {age} ساعة")
-    lines.append("")
-    lines.append(f"💰 الحالي: <code>{analysis['current_price']:,.0f}</code>")
-    lines.append("⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>")
+    lines += ["", f"💰 الحالي: <code>{a['current_price']:,.2f}</code>",
+              "⚠️ <i>تحليل تعليمي — مو نصيحة مالية.</i>"]
     return "\n".join(lines)

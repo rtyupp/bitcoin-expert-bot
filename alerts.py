@@ -1,4 +1,4 @@
-"""تنبيه الصيدة: فحص التوصية وإرسال تنبيه فوري عند إشارة قوية."""
+"""تنبيه الصيدة (حسب استراتيجية كل أصل) + تنبيهات السعر — متعدد الأصول."""
 import asyncio
 import json
 import logging
@@ -6,123 +6,92 @@ import os
 import time
 
 import analysis
+import assets
 import config
 
-STATE_FILE = os.path.join(os.path.dirname(__file__), "last_alert.txt")
+_HERE = os.path.dirname(__file__)
 
 
-def _read_last() -> float:
+def _state_path(asset: str) -> str:
+    return os.path.join(_HERE, f"last_alert_{asset}.txt")
+
+
+def _read_last(asset: str) -> float:
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(_state_path(asset), "r", encoding="utf-8") as f:
             return float(f.read().strip())
     except Exception:  # noqa: BLE001
         return 0.0
 
 
-def _write_last(ts: float) -> None:
+def _write_last(asset: str, ts: float) -> None:
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(_state_path(asset), "w", encoding="utf-8") as f:
             f.write(str(ts))
     except Exception:  # noqa: BLE001
         logging.exception("تعذّر حفظ توقيت آخر تنبيه")
 
 
-def _alert_text_multi(m: dict) -> str:
-    combined = m["combined"]
-    r1h = m["reports"].get("1h")
-    icon = "🟢 صيدة شراء!" if combined > 0 else "🔴 صيدة بيع!"
-    lines = [f"🚨 <b>{icon}</b>", ""]
-    if r1h:
-        lines.append(f"💰 السعر: <b>${r1h.price:,.0f}</b>")
-    lines.append(f"📈 الحكم (موزون): <b>{analysis.verdict(combined)}</b> (ثقة {analysis.confidence_pct(combined)}%)")
-    lines.append(f"🎯 النقاط: <code>{combined:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})")
-    lines.append(f"🤝 توافق الأطر: {m['agreement']}/{m['total']}")
-    lines.append("")
-    lines.append("الأطر الزمنية:")
-    for tf, r in m["reports"].items():
-        icon_tf = "🟢" if r.score >= 2 else ("🔴" if r.score <= -2 else "🟡")
-        lines.append(f"  {icon_tf} {tf}: {r.recommendation} ({r.score:+.1f})")
-    if r1h:
-        lines.append(f"\n🛡 وقف خسارة مقترح: <code>${r1h.price - 2 * r1h.atr:,.0f}</code>")
-    lines.append("\n⚠️ <i>ليست نصيحة مالية.</i>")
-    return "\n".join(lines)
-
-
-def _alert_text_breakout(sig: dict) -> str:
-    d = sig["direction"]
-    icon = "🚀 اختراق صاعد (زخم + حجم)" if d == "long" else "🔻 كسر هابط (زخم + حجم)"
-    arrow = "صاعد ↑" if d == "long" else "هابط ↓"
+def _alert_text_signal(sig: dict) -> str:
+    """رسالة إشارة استراتيجية الأصل."""
+    icon = "🚀" if sig["direction"] == "long" else "🔻"
+    word = "شراء" if sig["direction"] == "long" else "بيع"
     return (
-        f"💥 <b>{icon}</b>\n\n"
-        f"💰 السعر: <b>${sig['price']:,.0f}</b>\n"
-        f"📈 الاتجاه: {arrow} — فريم {sig['timeframe']}\n"
-        f"🔊 حجم التداول: <code>{sig['vol_ratio']:.1f}×</code> المتوسط (تأكيد قوي)\n"
+        f"{icon} <b>صيدة {sig['name']} — {word}</b>\n\n"
+        f"🎯 الاستراتيجية: <b>{sig['strategy']}</b>\n"
+        f"📌 {sig['label']}\n"
+        f"💰 السعر: <b>${sig['price']:,.2f}</b>\n"
+        f"📈 الفريم: {sig['timeframe']} | قوة الإشارة: <code>{sig['strength']:+.1f}</code>\n"
         f"🏦 المنصة: <code>{sig['exchange']}</code>\n\n"
-        f"⚡ <i>إشارة زخم مدعومة بالحجم — أقوى أنماط الدخول.</i>\n"
-        f"⚠️ ليست نصيحة مالية."
+        f"للتفاصيل: اضغط 🕯️ الشارت أو 🛡 خطة الصفقة\n"
+        f"⚠️ <i>ليست نصيحة مالية.</i>"
     )
 
 
 async def check_and_alert(bot, target: int | None = None) -> dict:
-    """يفحص الاختراق المدعوم بالحجم + التوصية متعددة الأطر، ويرسل تنبيهاً عند إشارة قوية."""
+    """يفحص إشارة الاستراتيجية لكل أصل ويرسل تنبيهاً عند تحققها."""
     target = target or config.ADMIN_CHAT_ID
     if target is None:
         return {"sent": False, "reason": "no_chat_id"}
 
-    # 1) كشف الاختراق المدعوم بالحجم (أقوى إشارة من الاختبار التاريخي)
-    try:
-        bk = await asyncio.to_thread(analysis.breakout_signal, "4h")
-    except Exception:  # noqa: BLE001
-        bk = None
-    if bk:
-        now = time.time()
-        if now - _read_last() < config.SIGNAL_COOLDOWN_MIN * 60:
-            return {"sent": False, "reason": "cooldown", "signal": "breakout"}
-        _write_last(now)
+    out: dict[str, dict] = {}
+    for key in assets.keys():
         try:
-            await bot.send_message(target, _alert_text_breakout(bk))
-            return {"sent": True, "signal": "breakout", "direction": bk["direction"]}
+            sig = await asyncio.to_thread(analysis.breakout_signal, "4h", key)
         except Exception as e:  # noqa: BLE001
-            return {"sent": False, "reason": f"send_failed: {e}", "signal": "breakout"}
-
-    # 2) فحص النقاط (متعدد الأطر)
-    try:
-        m = await asyncio.to_thread(analysis.analyze_multi)
-    except Exception as e:  # noqa: BLE001
-        return {"sent": False, "reason": f"analysis_failed: {e}"}
-
-    combined = m["combined"]
-    if abs(combined) < config.SIGNAL_THRESHOLD:
-        return {"sent": False, "reason": "weak_signal", "score": combined}
-    if m["agreement"] < config.SIGNAL_MIN_AGREEMENT:
-        return {"sent": False, "reason": "no_confluence", "score": combined, "agreement": m["agreement"]}
-
-    now = time.time()
-    if now - _read_last() < config.SIGNAL_COOLDOWN_MIN * 60:
-        return {"sent": False, "reason": "cooldown", "score": combined}
-
-    _write_last(now)
-    try:
-        await bot.send_message(target, _alert_text_multi(m))
-        return {"sent": True, "score": combined, "agreement": m["agreement"]}
-    except Exception as e:  # noqa: BLE001
-        return {"sent": False, "reason": f"send_failed: {e}", "score": combined}
+            out[key] = {"sent": False, "reason": f"fetch_failed: {type(e).__name__}"}
+            continue
+        if not sig:
+            out[key] = {"sent": False, "reason": "no_signal"}
+            continue
+        now = time.time()
+        if now - _read_last(key) < config.SIGNAL_COOLDOWN_MIN * 60:
+            out[key] = {"sent": False, "reason": "cooldown"}
+            continue
+        _write_last(key, now)
+        try:
+            await bot.send_message(target, _alert_text_signal(sig), parse_mode="HTML")
+            out[key] = {"sent": True, "label": sig["label"]}
+        except Exception as e:  # noqa: BLE001
+            out[key] = {"sent": False, "reason": f"send_failed: {e}"}
+    return {"assets": out}
 
 
 async def watcher_loop(bot) -> None:
-    """مراقبة مستمرة (لوضع polling على خادم دائم مثل Oracle)."""
+    """مراقبة مستمرة (وضع polling على خادم دائم)."""
     logging.info(
-        "مراقبة الصيدة بدأت — كل %ds، العتبة ±%.1f",
+        "مراقبة الصيد بدأت — كل %ds، الأصول: %s",
         config.SIGNAL_INTERVAL_SEC,
-        config.SIGNAL_THRESHOLD,
+        ", ".join(assets.keys()),
     )
     while True:
         try:
             res = await check_and_alert(bot)
-            if res.get("sent"):
-                logging.info("أُرسل تنبيه صيدة (score=%s)", res.get("score"))
+            sent = [k for k, v in res.get("assets", {}).items() if v.get("sent")]
+            if sent:
+                logging.info("أُرسل تنبيه لـ: %s", ", ".join(sent))
         except Exception:  # noqa: BLE001
-            logging.exception("خطأ في مراقبة الصيدة")
+            logging.exception("خطأ في مراقبة الصيد")
         try:
             await check_price_alerts(bot)
         except Exception:  # noqa: BLE001
@@ -132,7 +101,7 @@ async def watcher_loop(bot) -> None:
 
 # ── تنبيهات السعر المستهدفة ────────────────────────────────────
 
-PRICE_ALERTS_FILE = os.path.join(os.path.dirname(__file__), "price_alerts.json")
+PRICE_ALERTS_FILE = os.path.join(_HERE, "price_alerts.json")
 _price_alerts: dict[str, list[dict]] = {}
 
 
@@ -153,9 +122,11 @@ def _save_alerts() -> None:
         logging.exception("تعذّر حفظ تنبيهات السعر")
 
 
-def set_alert(chat_id: int, price: float, direction: str) -> None:
+def set_alert(chat_id: int, price: float, direction: str, asset: str = "btc") -> None:
     key = str(chat_id)
-    _price_alerts.setdefault(key, []).append({"price": price, "direction": direction})
+    _price_alerts.setdefault(key, []).append(
+        {"price": price, "direction": direction, "asset": asset}
+    )
     _save_alerts()
 
 
@@ -172,27 +143,37 @@ def clear_alerts(chat_id: int) -> int:
 
 
 async def check_price_alerts(bot) -> None:
-    """يفحص أهداف السعر ويرسل تنبيهاً عند الوصول (ويحذف المنفّذ)."""
+    """يفحص أهداف السعر لكل أصل ويرسل تنبيهاً عند الوصول."""
     if not _price_alerts:
         return
-    try:
-        price, _, _ = await asyncio.to_thread(analysis.ticker)
-    except Exception:  # noqa: BLE001
-        return
+    prices: dict[str, float] = {}
     for key in list(_price_alerts.keys()):
         remaining = []
         for a in _price_alerts[key]:
+            asset = a.get("asset", "btc")
+            if asset not in prices:
+                try:
+                    p, _, _ = await asyncio.to_thread(analysis.ticker, assets.get(asset)["symbol"])
+                    prices[asset] = p
+                except Exception:  # noqa: BLE001
+                    prices[asset] = -1.0
+            price = prices[asset]
+            if price <= 0:
+                remaining.append(a)
+                continue
             fired = (a["direction"] == "up" and price >= a["price"]) or (
                 a["direction"] == "down" and price <= a["price"]
             )
             if fired:
+                name = assets.get(asset)["name"]
                 try:
                     await bot.send_message(
                         int(key),
-                        f"⏰ <b>وصل البيتكوين لهدفك!</b>\n\n"
-                        f"💰 السعر الآن: <b>${price:,.0f}</b>\n"
-                        f"🎯 الهدف: <code>${a['price']:,.0f}</code>\n\n"
+                        f"⏰ <b>وصل {name} لهدفك!</b>\n\n"
+                        f"💰 السعر الآن: <b>${price:,.2f}</b>\n"
+                        f"🎯 الهدف: <code>${a['price']:,.2f}</code>\n\n"
                         f"⚠️ <i>ليست نصيحة مالية.</i>",
+                        parse_mode="HTML",
                     )
                 except Exception:  # noqa: BLE001
                     logging.exception("فشل إرسال تنبيه السعر")
