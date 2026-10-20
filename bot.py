@@ -572,6 +572,46 @@ async def memcheck(request: web.Request) -> web.Response:
         return web.Response(status=500, text=f"غير متاح: {e}")
 
 
+async def selftest(request: web.Request) -> web.Response:
+    """اختبار شامل على السيرفر: جلب → تحليل → رسم شارت، مع قياس الذاكرة."""
+    import time
+
+    def rss() -> str:
+        try:
+            with open("/proc/self/status", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return line.split(":", 1)[1].strip()
+        except Exception:  # noqa: BLE001
+            pass
+        return "?"
+
+    t0 = time.time()
+    before = rss()
+    try:
+        df = await asyncio.to_thread(charts.fetch_4h, "BTC/USDT", 30)
+        ana = await asyncio.to_thread(charts.analyze_chart, df)
+        png = await asyncio.to_thread(charts.plot_chart, df, ana, "BTC/USDT")
+        _trim_memory()
+        fe = ana["first_entry"]
+        return web.Response(
+            text=(
+                "OK\n"
+                f"candles: {len(df)}\n"
+                f"direction: {ana['direction']}\n"
+                f"entry: {fe['price'] if fe else None}\n"
+                f"stop: {ana['stop_loss']}\n"
+                f"tp1: {ana['tp1']}\n"
+                f"png_bytes: {len(png)}\n"
+                f"rss_before: {before}\n"
+                f"rss_after: {rss()}\n"
+                f"seconds: {time.time() - t0:.1f}\n"
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        return web.Response(status=500, text=f"FAIL {type(e).__name__}: {e}")
+
+
 async def cron(request: web.Request) -> web.Response:
     """يستدعيه Render Cron Job لإرسال الملخص اليومي."""
     if bot is None:
@@ -619,6 +659,7 @@ async def main():
             app = web.Application()
             app.router.add_get("/health", health)
             app.router.add_get("/mem", memcheck)
+            app.router.add_get("/selftest", selftest)
             app.router.add_post("/cron", cron)
             app.router.add_post("/signal-check", signal_check)
             runner = web.AppRunner(app)
@@ -641,6 +682,7 @@ async def main():
         handler.register(app, path=config.WEBHOOK_PATH)
         app.router.add_get("/health", health)
         app.router.add_get("/mem", memcheck)
+        app.router.add_get("/selftest", selftest)
         app.router.add_post("/cron", cron)
         app.router.add_post("/signal-check", signal_check)
         setup_application(app, dp, bot=bot)
