@@ -5,3 +5,5 @@ venv/
 .env
 .idea/
 .vscode/
+price_alerts.json
+last_alert.txt

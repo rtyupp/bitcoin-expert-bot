@@ -1,5 +1,6 @@
 """تنبيه الصيدة: فحص التوصية وإرسال تنبيه فوري عند إشارة قوية."""
 import asyncio
+import json
 import logging
 import os
 import time
@@ -84,4 +85,86 @@ async def watcher_loop(bot) -> None:
                 logging.info("أُرسل تنبيه صيدة (score=%s)", res.get("score"))
         except Exception:  # noqa: BLE001
             logging.exception("خطأ في مراقبة الصيدة")
+        try:
+            await check_price_alerts(bot)
+        except Exception:  # noqa: BLE001
+            logging.exception("خطأ في فحص أهداف السعر")
         await asyncio.sleep(config.SIGNAL_INTERVAL_SEC)
+
+
+# ── تنبيهات السعر المستهدفة ────────────────────────────────────
+
+PRICE_ALERTS_FILE = os.path.join(os.path.dirname(__file__), "price_alerts.json")
+_price_alerts: dict[str, list[dict]] = {}
+
+
+def _load_alerts() -> None:
+    global _price_alerts
+    try:
+        with open(PRICE_ALERTS_FILE, "r", encoding="utf-8") as f:
+            _price_alerts = json.load(f)
+    except Exception:  # noqa: BLE001
+        _price_alerts = {}
+
+
+def _save_alerts() -> None:
+    try:
+        with open(PRICE_ALERTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_price_alerts, f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        logging.exception("تعذّر حفظ تنبيهات السعر")
+
+
+def set_alert(chat_id: int, price: float, direction: str) -> None:
+    key = str(chat_id)
+    _price_alerts.setdefault(key, []).append({"price": price, "direction": direction})
+    _save_alerts()
+
+
+def list_alerts(chat_id: int) -> list[dict]:
+    return _price_alerts.get(str(chat_id), [])
+
+
+def clear_alerts(chat_id: int) -> int:
+    key = str(chat_id)
+    n = len(_price_alerts.get(key, []))
+    _price_alerts.pop(key, None)
+    _save_alerts()
+    return n
+
+
+async def check_price_alerts(bot) -> None:
+    """يفحص أهداف السعر ويرسل تنبيهاً عند الوصول (ويحذف المنفّذ)."""
+    if not _price_alerts:
+        return
+    try:
+        price, _, _ = await asyncio.to_thread(analysis.ticker)
+    except Exception:  # noqa: BLE001
+        return
+    for key in list(_price_alerts.keys()):
+        remaining = []
+        for a in _price_alerts[key]:
+            fired = (a["direction"] == "up" and price >= a["price"]) or (
+                a["direction"] == "down" and price <= a["price"]
+            )
+            if fired:
+                try:
+                    await bot.send_message(
+                        int(key),
+                        f"⏰ <b>وصل البيتكوين لهدفك!</b>\n\n"
+                        f"💰 السعر الآن: <b>${price:,.0f}</b>\n"
+                        f"🎯 الهدف: <code>${a['price']:,.0f}</code>\n\n"
+                        f"⚠️ <i>ليست نصيحة مالية.</i>",
+                    )
+                except Exception:  # noqa: BLE001
+                    logging.exception("فشل إرسال تنبيه السعر")
+            else:
+                remaining.append(a)
+        if remaining:
+            _price_alerts[key] = remaining
+        else:
+            del _price_alerts[key]
+    _save_alerts()
+
+
+_load_alerts()

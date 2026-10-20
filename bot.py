@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import ai_insights
@@ -31,35 +31,30 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-MENU = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💰 السعر الآن", callback_data="price"),
-            InlineKeyboardButton(text="📊 تحليل فني", callback_data="analysis"),
-        ],
-        [
-            InlineKeyboardButton(text="🧭 التوصية", callback_data="recommend"),
-            InlineKeyboardButton(text="😱 الخوف والطمع", callback_data="fng"),
-        ],
-        [
-            InlineKeyboardButton(text="⛓️ أون-تشين", callback_data="onchain"),
-            InlineKeyboardButton(text="🌍 نظرة السوق", callback_data="market"),
-        ],
-        [
-            InlineKeyboardButton(text="🤖 تحليل الذكاء الاصطناعي", callback_data="ai"),
-        ],
-    ]
+# الأزرار الثابتة تحت الكيبورد
+KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📊 التحليل"), KeyboardButton(text="🧭 التوصية")],
+        [KeyboardButton(text="💰 السعر"), KeyboardButton(text="😱 الخوف والطمع")],
+        [KeyboardButton(text="⛓️ أون-تشين"), KeyboardButton(text="🌍 السوق")],
+        [KeyboardButton(text="🤖 الذكاء الاصطناعي"), KeyboardButton(text="⏰ تنبيه سعر")],
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="اضغط زر أو اكتب أمراً مثل /alert",
 )
 
 
 @router.message(CommandStart())
 async def cmd_start(m: Message):
     await m.answer(
-        "أهلاً بك في <b>خبير توصيات البيتكوين</b> 🪙\n\n"
-        "بوت يدمج بيانات +100 منصة عبر <code>ccxt</code> ومؤشرات فنية "
-        "متقدمة ومؤشر الخوف والطمع وبيانات أون-تشين ليعطيك توصيات واضحة.\n\n"
-        "اختر من القائمة 👇",
-        reply_markup=MENU,
+        "🪙 <b>أهلاً بك في خبير توصيات البيتكوين</b>\n\n"
+        "أقوى محلل بيتكوين في جيبك — يدمج:\n"
+        "• تحليل فني متعدد الأطر (1س/4س/يوم)\n"
+        "• مؤشر الخوف والطمع + بيانات أون-تشين\n"
+        "• مستويات فيبوناتشي + توصية بثقة\n"
+        "• تنبيهات صيدة تلقائية + أهداف سعر\n\n"
+        "استخدم الأزرار بالأسفل 👇 أو اكتب /help",
+        reply_markup=KB,
     )
 
 
@@ -68,21 +63,25 @@ async def cmd_help(m: Message):
     await m.answer(
         "📖 <b>الأوامر:</b>\n"
         "/start — القائمة الرئيسية\n"
-        "/price — السعر الحالي من المنصات\n"
-        "/analysis — تحليل فني كامل (RSI, EMA, MACD, بولينجر)\n"
+        "/analysis — لوحة التحليل الشاملة (كل الأطر + فيبوناتشي)\n"
         "/recommend — توصية مباشرة مع الثقة\n"
-        "/feargreed — مؤشر الخوف والطمع\n"
-        "/onchain — رسوم الشبكة + الهاش ريت + الصعوبة\n"
+        "/price — السعر الحالي\n"
+        "/feargreed — الخوف والطمع\n"
+        "/onchain — رسوم الشبكة + الهاش ريت\n"
         "/market — نظرة السوق (CoinGecko)\n"
-        "/ai — تحليل ذكاء اصطناعي (DeepSeek)\n"
-        "/myid — معرف المحادثة (لتنبيه اليومي)",
-        reply_markup=MENU,
+        "/ai — تحليل ذكاء اصطناعي\n"
+        "/signal — فحص صيدة فوري\n"
+        "/alert — تنبيه سعر (مثال: /alert 85000)\n"
+        "/alerts — تنبيهاتك الحالية\n"
+        "/delalerts — حذف كل التنبيهات\n"
+        "/myid — معرف المحادثة",
+        reply_markup=KB,
     )
 
 
 @router.message(Command("myid"))
 async def cmd_myid(m: Message):
-    await m.answer(f"🆔 Chat ID الخاص بك: <code>{m.chat.id}</code>")
+    await m.answer(f"🆔 Chat ID الخاص بك: <code>{m.chat.id}</code>", reply_markup=KB)
 
 
 @router.message(Command("signal"))
@@ -99,13 +98,14 @@ async def cmd_signal(m: Message):
             f"📈 التوصية: <b>{report.recommendation}</b> (ثقة {report.confidence}%)\n"
             f"🎯 النقاط: <code>{report.score:+.1f}</code> (العتبة ±{config.SIGNAL_THRESHOLD:.1f})\n\n"
             f"للتفاصيل: /analysis",
-            reply_markup=MENU,
+            reply_markup=KB,
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر الفحص: {e}")
+        await m.answer(f"❌ تعذّر الفحص: {e}", reply_markup=KB)
 
 
 @router.message(Command("price"))
+@router.message(F.text == "💰 السعر")
 async def cmd_price(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
@@ -115,18 +115,20 @@ async def cmd_price(m: Message):
             icon = "🟢" if change >= 0 else "🔴"
             txt += f"التغير 24س: {icon} {change:+.2f}%\n"
         txt += f"\n🏦 المنصة: <code>{exchange}</code>"
-        await m.answer(txt, reply_markup=MENU)
+        await m.answer(txt, reply_markup=KB)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب السعر: {e}")
+        await m.answer(f"❌ تعذّر جلب السعر: {e}", reply_markup=KB)
 
 
 @router.message(Command("analysis"))
+@router.message(F.text == "📊 التحليل")
 async def cmd_analysis(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    await m.answer((await asyncio.to_thread(_analyze_msg)), reply_markup=MENU)
+    await m.answer(await asyncio.to_thread(_analyze_msg), reply_markup=KB)
 
 
 @router.message(Command("recommend"))
+@router.message(F.text == "🧭 التوصية")
 async def cmd_recommend(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     report = await asyncio.to_thread(analysis.analyze)
@@ -138,11 +140,12 @@ async def cmd_recommend(m: Message):
         f"🛡 وقف الخسارة المقترح: <code>${report.price - 2 * report.atr:,.0f}</code>\n\n"
         f"للتفاصيل الكاملة: /analysis\n\n"
         f"⚠️ <i>ليست نصيحة مالية.</i>",
-        reply_markup=MENU,
+        reply_markup=KB,
     )
 
 
 @router.message(Command("feargreed"))
+@router.message(F.text == "😱 الخوف والطمع")
 async def cmd_fng(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
@@ -154,13 +157,14 @@ async def cmd_fng(m: Message):
             f"الحالة: <b>{fng['ar']}</b>\n"
             f"{bar}\n\n"
             f"💡 <i>قيم منخفضة = فرص شراء غالباً، قيم مرتفعة = حذر من التصحيحات.</i>",
-            reply_markup=MENU,
+            reply_markup=KB,
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب المؤشر: {e}")
+        await m.answer(f"❌ تعذّر جلب المؤشر: {e}", reply_markup=KB)
 
 
 @router.message(Command("onchain"))
+@router.message(F.text == "⛓️ أون-تشين")
 async def cmd_onchain(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
@@ -174,13 +178,14 @@ async def cmd_onchain(m: Message):
             f"🖥 الهاش ريت: <code>{oc['hashrate_eh']} EH/s</code>\n"
             f"⛏ الصعوبة: <code>{oc['difficulty_t']} T</code>\n\n"
             f"💡 <i>الهاش ريت المرتفع = شبكة أقوى وأكثر أماناً.</i>",
-            reply_markup=MENU,
+            reply_markup=KB,
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب بيانات الشبكة: {e}")
+        await m.answer(f"❌ تعذّر جلب بيانات الشبكة: {e}", reply_markup=KB)
 
 
 @router.message(Command("market"))
+@router.message(F.text == "🌍 السوق")
 async def cmd_market(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
@@ -195,23 +200,24 @@ async def cmd_market(m: Message):
             f"🔄 حجم التداول 24س: <code>{data_feeds.fmt_big(mk['volume_24h'])}</code>\n"
             + (f"👑 هيمنة البيتكوين: <code>{mk['dominance']:.1f}%</code>\n" if mk["dominance"] else "")
             + f"\n⚠️ <i>ليست نصيحة مالية.</i>",
-            reply_markup=MENU,
+            reply_markup=KB,
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب بيانات السوق: {e}")
+        await m.answer(f"❌ تعذّر جلب بيانات السوق: {e}", reply_markup=KB)
 
 
 @router.message(Command("ai"))
+@router.message(F.text == "🤖 الذكاء الاصطناعي")
 async def cmd_ai(m: Message):
     if not config.DEEPSEEK_API_KEY:
         await m.answer(
             "🤖 <b>تحليل الذكاء الاصطناعي غير مفعّل</b>\n\n"
             "أضف متغير البيئة <code>DEEPSEEK_API_KEY</code> "
             "في لوحة Render ثم أعد النشر، أو اطلب مني تفعيله.",
-            reply_markup=MENU,
+            reply_markup=KB,
         )
         return
-    wait_msg = await m.answer("🤖 جاري التحليل بالذكاء الاصطناعي... (قد يأخذ ~30 ثانية)")
+    wait_msg = await m.answer("🤖 جاري التحليل بالذكاء الاصطناعي... (قد يأخذ ~30 ثانية)", reply_markup=KB)
     try:
         report = await asyncio.to_thread(analysis.analyze)
         fng, market = None, None
@@ -230,55 +236,81 @@ async def cmd_ai(m: Message):
         await wait_msg.edit_text(f"❌ فشل التحليل: {e}")
 
 
-# ── أزرار القائمة ──────────────────────────────────────────────
+# ── تنبيهات السعر ──────────────────────────────────────────────
 
-@router.callback_query(F.data == "price")
-async def cb_price(cb: CallbackQuery):
-    await cmd_price(cb.message)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "analysis")
-async def cb_analysis(cb: CallbackQuery):
-    await cmd_analysis(cb.message)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "recommend")
-async def cb_recommend(cb: CallbackQuery):
-    await cmd_recommend(cb.message)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "fng")
-async def cb_fng(cb: CallbackQuery):
-    await cmd_fng(cb.message)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "onchain")
-async def cb_onchain(cb: CallbackQuery):
-    await cmd_onchain(cb.message)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "market")
-async def cb_market(cb: CallbackQuery):
-    await cmd_market(cb.message)
-    await cb.answer()
+@router.message(Command("alert"))
+async def cmd_alert(m: Message):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    parts = m.text.split()
+    if len(parts) < 2:
+        await _alert_help(m)
+        return
+    raw = parts[1].replace(",", "").replace("$", "").replace("k", "000").replace("K", "000")
+    try:
+        target = float(raw)
+    except ValueError:
+        await m.answer("❌ سعر غير صحيح. مثال: <code>/alert 85000</code>", reply_markup=KB)
+        return
+    try:
+        cur, _, _ = await asyncio.to_thread(analysis.ticker)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر جلب السعر الحالي: {e}", reply_markup=KB)
+        return
+    direction = "up" if target > cur else "down"
+    alerts.set_alert(m.chat.id, target, direction)
+    arrow = "📈 فوق" if direction == "up" else "📉 تحت"
+    await m.answer(
+        f"⏰ <b>تم ضبط التنبيه</b>\n\n"
+        f"🎯 الهدف: <code>${target:,.0f}</code> ({arrow} السعر الحالي ${cur:,.0f})\n"
+        f"🔔 سأرسل لك فور الوصول.\n\n"
+        f"تنبيهاتك الحالية: /alerts",
+        reply_markup=KB,
+    )
 
 
-@router.callback_query(F.data == "ai")
-async def cb_ai(cb: CallbackQuery):
-    await cmd_ai(cb.message)
-    await cb.answer()
+@router.message(F.text == "⏰ تنبيه سعر")
+async def txt_alert(m: Message):
+    await _alert_help(m)
+
+
+async def _alert_help(m: Message):
+    await m.answer(
+        "⏰ <b>تنبيه السعر</b>\n\n"
+        "حدد سعراً والبوت يرسلك تنبيه لحظة وصول البيتكوين له.\n\n"
+        "الاستخدام:\n"
+        "<code>/alert 85000</code> — تنبيه عند وصول 85 ألف\n"
+        "<code>/alerts</code> — تنبيهاتك الحالية\n"
+        "<code>/delalerts</code> — حذف كل التنبيهات\n\n"
+        "مثال: /alert 95000",
+        reply_markup=KB,
+    )
+
+
+@router.message(Command("alerts"))
+async def cmd_alerts(m: Message):
+    items = alerts.list_alerts(m.chat.id)
+    if not items:
+        await m.answer("📭 لا توجد تنبيهات سعر حالية.\n\nلإضافة: <code>/alert 85000</code>", reply_markup=KB)
+        return
+    lines = ["⏰ <b>تنبيهات السعر الحالية:</b>\n"]
+    for i, a in enumerate(items, 1):
+        arrow = "📈 فوق" if a["direction"] == "up" else "📉 تحت"
+        lines.append(f"{i}. <code>${a['price']:,.0f}</code> — تنبيه {arrow} السعر الحالي")
+    lines.append("\nللحذف: /delalerts")
+    await m.answer("\n".join(lines), reply_markup=KB)
+
+
+@router.message(Command("delalerts"))
+async def cmd_delalerts(m: Message):
+    n = alerts.clear_alerts(m.chat.id)
+    await m.answer(f"🗑 حذفت {n} تنبيه سعر.", reply_markup=KB)
 
 
 # ── مساعدات ────────────────────────────────────────────────────
 
 def _analyze_msg() -> str:
     try:
-        return analysis.analyze().summary
+        return analysis.multi_summary()
     except Exception as e:  # noqa: BLE001
         return f"❌ تعذّر التحليل: {e}"
 
@@ -339,7 +371,6 @@ async def signal_check(request: web.Request) -> web.Response:
     if config.CRON_SECRET and not secrets.compare_digest(secret, config.CRON_SECRET):
         return web.Response(status=403, text="forbidden")
     res = await alerts.check_and_alert(bot)
-    import json
     return web.json_response(res)
 
 
@@ -359,7 +390,7 @@ async def main():
             await asyncio.Event().wait()
         raise RuntimeError("BOT_TOKEN غير مضبوط — ضعه في متغيرات البيئة")
 
-    # مراقبة الصيدة تعمل في الوضعين (webhook و polling) — ما دامت الخدمة مستيقظة
+    # مراقبة الصيدة + أهداف السعر تعمل في الوضعين — ما دامت الخدمة مستيقظة
     asyncio.create_task(alerts.watcher_loop(bot))
 
     if config.WEBHOOK_MODE:

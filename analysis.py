@@ -8,6 +8,22 @@ SYMBOL = "BTC/USDT"
 MAX_SCORE = 9.5  # مجموع أعلى الأوزان الإيجابية — لتطبيع الثقة
 
 
+def verdict(score: float) -> str:
+    if score >= 5:
+        return "شراء قوي 🟢"
+    if score >= 2:
+        return "شراء 🟩"
+    if score > -2:
+        return "محايد / انتظار 🟨"
+    if score > -5:
+        return "بيع 🟧"
+    return "بيع قوي 🔴"
+
+
+def confidence_pct(score: float) -> int:
+    return round(min(abs(score) / MAX_SCORE, 1.0) * 100)
+
+
 def fetch_ohlcv(timeframe: str = "1h", limit: int = 250) -> tuple[pd.DataFrame, str]:
     """جلب الشموع من أول منصة تستجيب (تحويل تلقائي بين المنصات عند الحظر)."""
     import ccxt
@@ -65,19 +81,11 @@ class Report:
 
     @property
     def confidence(self) -> int:
-        return round(min(abs(self.score) / MAX_SCORE, 1.0) * 100)
+        return confidence_pct(self.score)
 
     @property
     def recommendation(self) -> str:
-        if self.score >= 5:
-            return "شراء قوي 🟢"
-        if self.score >= 2:
-            return "شراء 🟩"
-        if self.score > -2:
-            return "محايد / انتظار 🟨"
-        if self.score > -5:
-            return "بيع 🟧"
-        return "بيع قوي 🔴"
+        return verdict(self.score)
 
     @property
     def summary(self) -> str:
@@ -247,3 +255,74 @@ def analyze(timeframe: str = "1h") -> Report:
         score=round(score, 1),
         reasons=reasons,
     )
+
+
+# ── تحليل متعدد الأطر الزمنية + فيبوناتشي ──────────────────────
+
+TIMEFRAME_WEIGHTS = {"1h": 0.4, "4h": 0.35, "1d": 0.25}
+
+
+def fib_levels(df) -> dict:
+    """مستويات فيبوناتشي من آخر 100 شمعة (أعلى قمة → أدنى قاع)."""
+    recent = df.iloc[-100:]
+    hi = float(recent["high"].max())
+    lo = float(recent["low"].min())
+    diff = hi - lo
+    return {f"{r:.3f}": round(lo + diff * r, 0) for r in (0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)}
+
+
+def analyze_multi() -> dict:
+    """تحليل عدة أطر زمنية بنقاط موزونة — الإطار الأعلى وزن أكبر."""
+    reports = {}
+    for tf in TIMEFRAME_WEIGHTS:
+        try:
+            reports[tf] = analyze(tf)
+        except Exception:  # noqa: BLE001
+            reports[tf] = None
+    valid = {tf: r for tf, r in reports.items() if r is not None}
+    if not valid:
+        raise RuntimeError("تعذّر التحليل على كل الأطر الزمنية")
+    denom = sum(TIMEFRAME_WEIGHTS[tf] for tf in valid)
+    combined = sum(r.score * TIMEFRAME_WEIGHTS[tf] for tf, r in valid.items()) / denom
+    bullish = sum(1 for r in valid.values() if r.score >= 2)
+    bearish = sum(1 for r in valid.values() if r.score <= -2)
+    agreement = max(bullish, bearish)
+    return {
+        "reports": valid,
+        "combined": round(combined, 1),
+        "agreement": agreement,
+        "total": len(valid),
+    }
+
+
+def multi_summary() -> str:
+    """لوحة تحليل شاملة — كل الأطر + الحكم النهائي + فيبوناتشي."""
+    m = analyze_multi()
+    reports = m["reports"]
+    r1h = reports.get("1h")
+    lines = ["📊 <b>لوحة التحليل الشاملة</b> — BTC/USDT", ""]
+    if r1h:
+        chg = f" ({r1h.change_24h:+.2f}% 24س)" if r1h.change_24h is not None else ""
+        lines.append(f"💰 السعر: <b>${r1h.price:,.0f}</b>{chg}")
+        lines.append("")
+    lines.append("<b>🎯 الأطر الزمنية:</b>")
+    for tf, r in reports.items():
+        icon = "🟢" if r.score >= 2 else ("🔴" if r.score <= -2 else "🟡")
+        lines.append(
+            f"  {icon} <b>{tf}</b>: {r.recommendation} — نقاط <code>{r.score:+.1f}</code> | RSI {r.rsi:.0f}"
+        )
+    lines.append("")
+    lines.append(f"🧭 <b>الحكم النهائي: {verdict(m['combined'])}</b> (ثقة {confidence_pct(m['combined'])}%)")
+    lines.append(f"🤝 توافق الأطر الزمنية: {m['agreement']}/{m['total']} في نفس الاتجاه")
+    try:
+        df, _ = fetch_ohlcv("1h")
+        fib = fib_levels(df)
+        lines.append("")
+        lines.append("📐 <b>مستويات فيبوناتشي (1h):</b>")
+        for k in ("0.382", "0.500", "0.618"):
+            lines.append(f"  • {k}: <code>${fib[k]:,.0f}</code>")
+    except Exception:  # noqa: BLE001
+        pass
+    lines.append("")
+    lines.append("⚠️ <i>ليست نصيحة مالية — لأغراض تعليمية.</i>")
+    return "\n".join(lines)
