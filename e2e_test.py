@@ -43,6 +43,18 @@ async def main() -> int:
     chat = {"id": CHAT_ID, "type": "private", "first_name": "Test"}
     results = []
 
+    # اعتراض على مستوى الجلسة (aiogram يمنع تعديل الميثودات على نسخة البوت)
+    calls: list[tuple[str, object]] = []
+    _sess = bot.bot.session
+    _orig = _sess.make_request
+
+    async def _spy(bot_obj, method, timeout=None):
+        res = await _orig(bot_obj, method, timeout=timeout)
+        calls.append((method.__api_method__, res))
+        return res
+
+    _sess.make_request = _spy
+
     for i, (text, _limit) in enumerate(CASES, start=1):
         update = {
             "update_id": 910000 + i,
@@ -58,17 +70,30 @@ async def main() -> int:
                 ),
             },
         }
+        calls.clear()
         t0 = time.time()
         try:
             await bot.dp.feed_update(bot.bot, Update.model_validate(update))
-            results.append((text, "OK", time.time() - t0))
+            bad = []
+            photo_ok = False
+            for api, res in calls:
+                txt = getattr(res, "text", None) or getattr(res, "caption", None) or ""
+                if api in ("sendMessage", "sendPhoto", "editMessageText") and str(txt).startswith("❌"):
+                    bad.append(str(txt))
+                if api == "sendPhoto" and getattr(res, "photo", None):
+                    photo_ok = True
+            if bad:
+                results.append((text, f"FAIL {bad[0][:70]}", time.time() - t0))
+            else:
+                tag = "OK 📷" if photo_ok else "OK"
+                results.append((text, tag, time.time() - t0))
         except Exception as e:  # noqa: BLE001
             results.append((text, f"FAIL {type(e).__name__}: {e}", time.time() - t0))
 
     print("\n===== نتيجة الاختبار =====")
     for text, status, sec in results:
         print(f"  {text:16s} | {status[:60]:60s} | {sec:5.1f}s")
-    ok = sum(1 for _, s, _ in results if s == "OK")
+    ok = sum(1 for _, s, _ in results if s.startswith("OK"))
     print(f"\nنجح {ok}/{len(results)}")
     await bot.bot.session.close()
     return 0 if ok == len(results) else 1

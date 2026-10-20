@@ -20,7 +20,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import ai_insights
@@ -255,9 +255,12 @@ async def _send_chart(m: Message, key: str) -> None:
             msg = charts.short_message(ana, cfg["symbol"])
             png = await asyncio.to_thread(charts.plot_chart, df, ana, cfg["symbol"])
         _trim_memory()
-        await m.answer_photo(photo=png, caption=msg, reply_markup=section_kb(key),
+        # aiogram 3 يطلب InputFile — الـ bytes الخام تُرفض
+        photo = BufferedInputFile(png, filename=f"{cfg['key']}_chart.png")
+        await m.answer_photo(photo=photo, caption=msg, reply_markup=section_kb(key),
                              parse_mode=ParseMode.HTML)
     except Exception as e:  # noqa: BLE001
+        logging.exception("فشل بناء الشارت لـ %s", key)
         await m.answer(f"❌ تعذّر بناء الشارت: {e}", reply_markup=section_kb(key))
 
 
