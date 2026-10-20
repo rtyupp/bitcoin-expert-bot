@@ -1,7 +1,11 @@
 """محرك التوصيات: بيانات ccxt + مؤشرات ta + نظام نقاط مستوحى من استراتيجيات freqtrade."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+
+# مجمع خيوط لإطارات التحليل — يعمل بالتوازي بدل التسلسل
+_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tf")
 
 EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
 SYMBOL = "BTC/USDT"
@@ -24,18 +28,28 @@ def confidence_pct(score: float) -> int:
     return round(min(abs(score) / MAX_SCORE, 1.0) * 100)
 
 
+_GOOD_EXCHANGE: str | None = None
+
+
 def fetch_ohlcv(timeframe: str = "1h", limit: int = 250) -> tuple[pd.DataFrame, str]:
-    """جلب الشموع من أول منصة تستجيب (تحويل تلقائي بين المنصات عند الحظر)."""
+    """جلب الشموع — يبدأ من المنصة الناجحة سابقاً (يوفّر محاولات فاشلة بطيئة)."""
     import ccxt
     import pandas as pd
 
+    global _GOOD_EXCHANGE
+    order = EXCHANGES
+    if _GOOD_EXCHANGE:
+        order = (_GOOD_EXCHANGE,) + tuple(e for e in EXCHANGES if e != _GOOD_EXCHANGE)
     errors = []
-    for eid in EXCHANGES:
+    for eid in order:
         try:
-            ex = getattr(ccxt, eid)()
+            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
             raw = ex.fetch_ohlcv(SYMBOL, timeframe, limit=limit)
+            if not raw:
+                raise ValueError("لا بيانات")
             df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
             df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+            _GOOD_EXCHANGE = eid
             return df, eid
         except Exception as err:  # noqa: BLE001
             errors.append(f"{eid}: {type(err).__name__}")
@@ -43,15 +57,20 @@ def fetch_ohlcv(timeframe: str = "1h", limit: int = 250) -> tuple[pd.DataFrame, 
 
 
 def ticker() -> tuple[float, float | None, str]:
-    """سعر البيتكوين الحالي + نسبة التغير 24س من أول منصة تستجيب."""
+    """سعر البيتكوين الحالي + نسبة التغير 24س — يبدأ من المنصة الناجحة سابقاً."""
     import ccxt
 
-    for eid in EXCHANGES:
+    global _GOOD_EXCHANGE
+    order = EXCHANGES
+    if _GOOD_EXCHANGE:
+        order = (_GOOD_EXCHANGE,) + tuple(e for e in EXCHANGES if e != _GOOD_EXCHANGE)
+    for eid in order:
         try:
-            ex = getattr(ccxt, eid)()
+            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
             t = ex.fetch_ticker(SYMBOL)
             price = float(t["last"] or t["close"])
             change = t.get("percentage")
+            _GOOD_EXCHANGE = eid
             return price, change, eid
         except Exception:  # noqa: BLE001
             continue
@@ -365,9 +384,10 @@ def fib_levels(df) -> dict:
 def analyze_multi() -> dict:
     """تحليل عدة أطر زمنية بنقاط موزونة — الإطار الأعلى وزن أكبر."""
     reports = {}
-    for tf in TIMEFRAME_WEIGHTS:
+    futures = {tf: _POOL.submit(analyze, tf) for tf in TIMEFRAME_WEIGHTS}
+    for tf, fut in futures.items():
         try:
-            reports[tf] = analyze(tf)
+            reports[tf] = fut.result(timeout=45)
         except Exception:  # noqa: BLE001
             reports[tf] = None
     valid = {tf: r for tf, r in reports.items() if r is not None}
