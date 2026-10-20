@@ -1,7 +1,19 @@
 """بوت خبير توصيات البيتكوين — aiogram 3 (webhook على Render / polling محلياً)."""
+import ctypes
+import os
+
+# ── تقليل استهلاك الذاكرة على glibc (خطة Render 512MB) ──
+# glibc تنشئ arena لكل خيط (64MB لكل واحدة) → تضخم RSS. نحدّها بـ 2.
+os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+try:
+    ctypes.CDLL("libc.so.6").mallopt(-8, 2)  # M_ARENA_MAX = -8
+except Exception:  # noqa: BLE001
+    pass
+
 import asyncio
 import logging
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 from aiohttp import web
 
@@ -539,6 +551,7 @@ async def memcheck(request: web.Request) -> web.Response:
                 f"الحالي (RSS): {vals.get('VmRSS', '?')}\n"
                 f"الذروة (Peak): {vals.get('VmHWM', '?')}\n"
                 f"الحد الأقصى (VmPeak): {vals.get('VmPeak', '?')}\n"
+                f"الخيوط: {__import__('threading').active_count()}\n"
             )
         )
     except Exception as e:  # noqa: BLE001
@@ -575,6 +588,10 @@ async def signal_check(request: web.Request) -> web.Response:
 
 
 async def main():
+    # حد أقصى 3 خيوط — يمنع تكاثر malloc arenas وتضخم RSS
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=3, thread_name_prefix="io")
+    )
     if bot is None:
         if config.WEBHOOK_MODE:
             # بدون توكن: نخدم /health فقط حتى يضيف المستخدم BOT_TOKEN في لوحة Render

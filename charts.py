@@ -2,7 +2,6 @@
 import pandas as pd
 import numpy as np
 
-import ccxt
 import ta
 
 import chartimg
@@ -13,6 +12,8 @@ _EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
 
 def fetch_4h(symbol: str, days: int = 30):
     """جلب بيانات 4h مع تبديل المنصات تلقائياً عند الحجب + مهلة زمنية."""
+    import ccxt  # استيراد مؤجّل — ccxt ثقيل (~50MB) ولا نحتاجه إلا عند طلب شارت
+
     limit = min(days * 6, 300)
     errors = []
     for eid in _EXCHANGES:
