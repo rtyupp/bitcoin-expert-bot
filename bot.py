@@ -601,6 +601,13 @@ async def signal_check(request: web.Request) -> web.Response:
     return web.json_response(res)
 
 
+async def _memory_keeper() -> None:
+    """ينظّف الذاكرة كل 60 ثانية — يمنع تراكم كومة pandas حتى لا يتكرر OOM."""
+    while True:
+        await asyncio.sleep(60)
+        _trim_memory()
+
+
 async def main():
     # حد أقصى 3 خيوط — يمنع تكاثر malloc arenas وتضخم RSS
     asyncio.get_running_loop().set_default_executor(
@@ -624,6 +631,7 @@ async def main():
 
     # مراقبة الصيدة + أهداف السعر تعمل في الوضعين — ما دامت الخدمة مستيقظة
     asyncio.create_task(alerts.watcher_loop(bot))
+    asyncio.create_task(_memory_keeper())
 
     if config.WEBHOOK_MODE:
         app = web.Application()
