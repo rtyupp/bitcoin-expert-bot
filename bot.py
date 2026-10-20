@@ -490,6 +490,7 @@ async def _send_chart(m: Message, symbol: str) -> None:
             png = None
             if ana["first_entry"]:
                 png = await asyncio.to_thread(charts.plot_chart, df, ana, symbol)
+        _trim_memory()
         if png:
             await m.answer_photo(photo=png, caption=msg, reply_markup=KB, parse_mode=ParseMode.HTML)
         else:
@@ -537,8 +538,21 @@ async def health(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
 
+def _trim_memory() -> None:
+    """يرجّع الذاكرة الحرة للنظام — ضروري بعد عمليات pandas التي تحتجز الكومة."""
+    try:
+        import gc
+
+        gc.collect()
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def memcheck(request: web.Request) -> web.Response:
     """تشخيص استهلاك الذاكرة — يكشف خطر OOM على الخطة المجانية (512MB)."""
+    if request.query.get("trim"):
+        _trim_memory()
     try:
         vals = {}
         with open("/proc/self/status", encoding="utf-8") as f:
