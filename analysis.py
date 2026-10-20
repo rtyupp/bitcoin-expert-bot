@@ -417,3 +417,28 @@ def multi_summary() -> str:
     lines.append("")
     lines.append("⚠️ <i>ليست نصيحة مالية — لأغراض تعليمية.</i>")
     return "\n".join(lines)
+
+
+def breakout_signal(timeframe: str = "4h") -> dict | None:
+    """كسر بولينجر مع تأكيد حجم (×1.5) — أقوى إشارة دخول من الاختبار التاريخي (فوز 54%).
+
+    يرجع None إذا لا يوجد اختراق، أو dict بجهة الاختراق وتفاصيله.
+    """
+    import ta
+
+    df, exchange = fetch_ohlcv(timeframe, limit=250)
+    close, vol = df["close"], df["volume"]
+    bb = ta.volatility.BollingerBands(close, 20, 2)
+    up = float(bb.bollinger_hband().iloc[-1])
+    lo = float(bb.bollinger_lband().iloc[-1])
+    price = float(close.iloc[-1])
+    avg_vol = float(vol.iloc[-21:-1].mean()) if len(vol) > 21 else float(vol.mean())
+    vol_ratio = float(vol.iloc[-1]) / avg_vol if avg_vol else 1.0
+
+    if price > up and vol_ratio >= 1.5:
+        return {"direction": "long", "price": price, "vol_ratio": round(vol_ratio, 1),
+                "timeframe": timeframe, "exchange": exchange}
+    if price < lo and vol_ratio >= 1.5:
+        return {"direction": "short", "price": price, "vol_ratio": round(vol_ratio, 1),
+                "timeframe": timeframe, "exchange": exchange}
+    return None

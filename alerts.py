@@ -48,11 +48,44 @@ def _alert_text_multi(m: dict) -> str:
     return "\n".join(lines)
 
 
+def _alert_text_breakout(sig: dict) -> str:
+    d = sig["direction"]
+    icon = "🚀 اختراق صاعد (زخم + حجم)" if d == "long" else "🔻 كسر هابط (زخم + حجم)"
+    arrow = "صاعد ↑" if d == "long" else "هابط ↓"
+    return (
+        f"💥 <b>{icon}</b>\n\n"
+        f"💰 السعر: <b>${sig['price']:,.0f}</b>\n"
+        f"📈 الاتجاه: {arrow} — فريم {sig['timeframe']}\n"
+        f"🔊 حجم التداول: <code>{sig['vol_ratio']:.1f}×</code> المتوسط (تأكيد قوي)\n"
+        f"🏦 المنصة: <code>{sig['exchange']}</code>\n\n"
+        f"⚡ <i>إشارة زخم مدعومة بالحجم — أقوى أنماط الدخول.</i>\n"
+        f"⚠️ ليست نصيحة مالية."
+    )
+
+
 async def check_and_alert(bot, target: int | None = None) -> dict:
-    """يفحص التوصية (متعدد الأطر + توافق) ويرسل تنبيهاً عند صيدة قوية (مع تهدئة)."""
+    """يفحص الاختراق المدعوم بالحجم + التوصية متعددة الأطر، ويرسل تنبيهاً عند إشارة قوية."""
     target = target or config.ADMIN_CHAT_ID
     if target is None:
         return {"sent": False, "reason": "no_chat_id"}
+
+    # 1) كشف الاختراق المدعوم بالحجم (أقوى إشارة من الاختبار التاريخي)
+    try:
+        bk = await asyncio.to_thread(analysis.breakout_signal, "4h")
+    except Exception:  # noqa: BLE001
+        bk = None
+    if bk:
+        now = time.time()
+        if now - _read_last() < config.SIGNAL_COOLDOWN_MIN * 60:
+            return {"sent": False, "reason": "cooldown", "signal": "breakout"}
+        _write_last(now)
+        try:
+            await bot.send_message(target, _alert_text_breakout(bk))
+            return {"sent": True, "signal": "breakout", "direction": bk["direction"]}
+        except Exception as e:  # noqa: BLE001
+            return {"sent": False, "reason": f"send_failed: {e}", "signal": "breakout"}
+
+    # 2) فحص النقاط (متعدد الأطر)
     try:
         m = await asyncio.to_thread(analysis.analyze_multi)
     except Exception as e:  # noqa: BLE001
