@@ -32,20 +32,62 @@ def _write_last(asset: str, ts: float) -> None:
         logging.exception("تعذّر حفظ توقيت آخر تنبيه")
 
 
-def _alert_text_signal(sig: dict) -> str:
-    """رسالة إشارة استراتيجية الأصل."""
+def _alert_text_signal(sig: dict, plan: dict | None = None) -> str:
+    """رسالة إشارة استراتيجية الأصل (مع الأهداف إن توفرت الخطة)."""
     icon = "🚀" if sig["direction"] == "long" else "🔻"
     word = "شراء" if sig["direction"] == "long" else "بيع"
-    return (
-        f"{icon} <b>صيدة {sig['name']} — {word}</b>\n\n"
-        f"🎯 الاستراتيجية: <b>{sig['strategy']}</b>\n"
-        f"📌 {sig['label']}\n"
-        f"💰 السعر: <b>${sig['price']:,.2f}</b>\n"
-        f"📈 الفريم: {sig['timeframe']} | قوة الإشارة: <code>{sig['strength']:+.1f}</code>\n"
-        f"🏦 المنصة: <code>{sig['exchange']}</code>\n\n"
-        f"للتفاصيل: اضغط 🕯️ الشارت أو 🛡 خطة الصفقة\n"
-        f"⚠️ <i>ليست نصيحة مالية.</i>"
-    )
+    lines = [
+        f"{icon} <b>صيدة {sig['name']} — {word}</b>",
+        "",
+        f"🎯 الاستراتيجية: <b>{sig['strategy']}</b>",
+        f"📌 {sig['label']}",
+        f"💰 السعر: <b>${sig['price']:,.2f}</b>",
+    ]
+    fe = (plan or {}).get("first_entry")
+    if fe and plan.get("stop_loss") and plan.get("tp1"):
+        lines += [
+            f"📍 الدخول: <code>${fe['price']:,.2f}</code>",
+            f"🛑 الوقف: <code>${plan['stop_loss']:,.2f}</code>",
+            f"🎯 الهدف: <code>${plan['tp1']:,.2f}</code> (1:{plan.get('rr', 0):.0f})",
+        ]
+    lines += [
+        f"📈 الفريم: {sig['timeframe']} | قوة الإشارة: <code>{sig['strength']:+.1f}</code>",
+        f"🏦 المنصة: <code>{sig['exchange']}</code>",
+        "",
+        "📊 الأهداف مرسومة على الشارت 👆 — ويصلك تنبيه فور وصول الهدف",
+        "للتفاصيل: اضغط 🕯️ الشارت أو 🛡 خطة الصفقة",
+        "⚠️ <i>ليست نصيحة مالية.</i>",
+    ]
+    return "\n".join(lines)
+
+
+def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
+    """خطة الصفقة + شارت — الخطة تُحسب من شمعة الإشارة نفسها (آخر شمعة)
+    حتى يتطابق الشارت والرسالة والمتابعة دائماً مع الإشارة اللي أطلقت التنبيه."""
+    import charts
+
+    cfg = assets.get(asset_key)
+    df = charts.fetch_4h(cfg["symbol"], days=20)
+    plan = charts.analyze_chart(df, asset_key)
+
+    import analysis as _analysis
+
+    atr = float(_analysis.indicators(df)["atr"].iloc[-1])
+    entry = float(df["close"].iloc[-1])
+    d = 1 if sig.get("direction", "long") == "long" else -1
+    sd = atr * cfg["stop_mult"]
+    n = len(df)
+    plan = {
+        **plan,
+        "direction": "buy" if d == 1 else "sell",
+        "first_entry": {"idx": n - 1, "price": entry, "ts": df["ts"].iloc[-1]},
+        "second_entry": None,
+        "stop_loss": entry - d * sd,
+        "tp1": entry + d * cfg["rr"] * sd,
+        "strength": sig["strength"],
+    }
+    png = charts.plot_chart(df, plan, cfg["symbol"], live_price=sig["price"])
+    return plan, png
 
 
 async def check_and_alert(bot, target: int | None = None) -> dict:
@@ -69,9 +111,29 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
             out[key] = {"sent": False, "reason": "cooldown"}
             continue
         _write_last(key, now)
+        # الشارت + الخطة (الدخول/الوقف/الهدف مرسومة على الشارت)
+        plan: dict | None = None
+        png: bytes | None = None
         try:
-            await bot.send_message(target, _alert_text_signal(sig), parse_mode="HTML")
-            out[key] = {"sent": True, "label": sig["label"]}
+            plan, png = await asyncio.to_thread(_build_chart_package, key, sig)
+        except Exception:  # noqa: BLE001
+            logging.exception("تعذّر بناء شارت الإشارة لـ %s", key)
+        text = _alert_text_signal(sig, plan)
+        try:
+            if png:
+                from aiogram.types import BufferedInputFile
+
+                await bot.send_photo(
+                    target,
+                    photo=BufferedInputFile(png, filename=f"signal_{key}.png"),
+                    caption=text,
+                    parse_mode="HTML",
+                )
+            else:
+                await bot.send_message(target, text, parse_mode="HTML")
+            # سجّل الأهداف للمتابعة حتى تتحقق
+            _register_watch(key, sig, plan, target)
+            out[key] = {"sent": True, "label": sig["label"], "chart": bool(png)}
         except Exception as e:  # noqa: BLE001
             out[key] = {"sent": False, "reason": f"send_failed: {e}"}
     return {"assets": out}
@@ -96,6 +158,10 @@ async def watcher_loop(bot) -> None:
             await check_price_alerts(bot)
         except Exception:  # noqa: BLE001
             logging.exception("خطأ في فحص أهداف السعر")
+        try:
+            await check_signal_targets(bot)
+        except Exception:  # noqa: BLE001
+            logging.exception("خطأ في فحص أهداف الصيدات")
         await asyncio.sleep(config.SIGNAL_INTERVAL_SEC)
 
 
@@ -186,4 +252,128 @@ async def check_price_alerts(bot) -> None:
     _save_alerts()
 
 
+# ── متابعة أهداف الصيدات (تنبيه عند وصول الهدف أو الوقف) ────────
+
+WATCH_FILE = os.path.join(_HERE, "signal_watch.json")
+_watch: dict[str, dict] = {}
+
+
+def _load_watch() -> None:
+    global _watch
+    try:
+        with open(WATCH_FILE, "r", encoding="utf-8") as f:
+            _watch = json.load(f)
+    except Exception:  # noqa: BLE001
+        _watch = {}
+
+
+def _save_watch() -> None:
+    try:
+        with open(WATCH_FILE, "w", encoding="utf-8") as f:
+            json.dump(_watch, f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        logging.exception("تعذّر حفظ متابعة الأهداف")
+
+
+def _register_watch(asset_key: str, sig: dict, plan: dict | None, chat_id: int) -> None:
+    """يسجّل أهداف الصيدة الحالية لمتابعتها حتى تتحقق (يستبدل القديمة)."""
+    fe = (plan or {}).get("first_entry") or {}
+    entry = float(fe.get("price") or sig["price"])
+    tp1 = (plan or {}).get("tp1")
+    if not tp1:
+        return
+    direction = sig.get("direction", "long")
+    # لو الهدف متحقق أصلاً لحظة الإشارة → لا معنى للمتابعة
+    if direction == "long" and sig["price"] >= float(tp1):
+        return
+    if direction != "long" and sig["price"] <= float(tp1):
+        return
+    stop = (plan or {}).get("stop_loss")
+    _watch[asset_key] = {
+        "direction": direction,
+        "entry": entry,
+        "tp1": float(tp1),
+        "stop": float(stop) if stop else None,
+        "opened_ts": time.time(),
+        "chat_ids": [int(chat_id)],
+    }
+    _save_watch()
+
+
+async def _hit_chart(asset_key: str, price: float) -> bytes | None:
+    """شارت لحظة تحقق الهدف — خط السعر الآن يظهر على مستوى الهدف."""
+    try:
+        import charts
+
+        cfg = assets.get(asset_key)
+        df = charts.fetch_4h(cfg["symbol"], days=20)
+        plan = charts.analyze_chart(df, asset_key)
+        return charts.plot_chart(df, plan, cfg["symbol"], live_price=price)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def check_signal_targets(bot) -> int:
+    """يفحص الصيدات المفتوحة: هل وصل السعر للهدف أو للوقف؟ يرسل تنبيهاً مع الشارت."""
+    if not _watch:
+        return 0
+    fired = 0
+    for key, w in list(_watch.items()):
+        try:
+            price, _, _ = await asyncio.to_thread(analysis.ticker, assets.get(key)["symbol"])
+        except Exception:  # noqa: BLE001
+            continue
+        direction = w.get("direction", "long")
+        if direction == "long":
+            hit = "tp" if price >= w["tp1"] else ("sl" if w.get("stop") and price <= w["stop"] else None)
+        else:
+            hit = "tp" if price <= w["tp1"] else ("sl" if w.get("stop") and price >= w["stop"] else None)
+        if not hit:
+            continue
+        name = assets.get(key)["name"]
+        if hit == "tp":
+            head = f"🎯 <b>الهدف تحقق — {name}!</b>"
+            body = (
+                f"📍 الدخول: <code>${w['entry']:,.2f}</code>\n"
+                f"🎯 الهدف: <code>${w['tp1']:,.2f}</code>\n"
+                f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
+                f"✅ الصيدة وصلت هدفها — شوف الشارت 👆"
+            )
+        else:
+            head = f"🛑 <b>ضرب الوقف — {name}</b>"
+            body = (
+                f"📍 الدخول: <code>${w['entry']:,.2f}</code>\n"
+                f"🛑 الوقف: <code>${w['stop']:,.2f}</code>\n"
+                f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
+                f"⚠️ اخرج من الصيدة واحترم إدارة المخاطر."
+            )
+        text = f"{head}\n\n{body}\n\n⚠️ <i>ليست نصيحة مالية.</i>"
+        png = await _hit_chart(key, price)
+        delivered = False
+        for chat_id in w.get("chat_ids", []):
+            try:
+                if png:
+                    from aiogram.types import BufferedInputFile
+
+                    await bot.send_photo(
+                        int(chat_id),
+                        photo=BufferedInputFile(png, filename=f"{key}_hit.png"),
+                        caption=text,
+                        parse_mode="HTML",
+                    )
+                else:
+                    await bot.send_message(int(chat_id), text, parse_mode="HTML")
+                delivered = True
+            except Exception:  # noqa: BLE001
+                logging.exception("فشل إرسال تنبيه هدف %s", key)
+        # نحذف المراقبة فقط إذا وصل التنبيه فعلاً — وإلا يعاد المحاولة بالدورة القادمة
+        if delivered:
+            fired += 1
+            _watch.pop(key, None)
+            _save_watch()
+            logging.info("هدف صيدة %s تحقق (%s) — أُرسل التنبيه", key, hit)
+    return fired
+
+
 _load_alerts()
+_load_watch()
