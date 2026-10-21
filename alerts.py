@@ -44,12 +44,14 @@ def _alert_text_signal(sig: dict, plan: dict | None = None) -> str:
         f"💰 السعر: <b>${sig['price']:,.2f}</b>",
     ]
     fe = (plan or {}).get("first_entry")
-    if fe and plan.get("stop_loss") and plan.get("tp1"):
+    if plan and fe and plan.get("stop_loss") and plan.get("tp1"):
         lines += [
             f"📍 الدخول: <code>${fe['price']:,.2f}</code>",
             f"🛑 الوقف: <code>${plan['stop_loss']:,.2f}</code>",
-            f"🎯 الهدف: <code>${plan['tp1']:,.2f}</code> (1:{plan.get('rr', 0):.0f})",
         ]
+        if plan.get("tp_be"):
+            lines.append(f"🔒 تأمين الوقف (1:1): <code>${plan['tp_be']:,.2f}</code>")
+        lines.append(f"🎯 الهدف الكامل: <code>${plan['tp1']:,.2f}</code> (1:{plan.get('rr', 0):.0f})")
     lines += [
         f"📈 الفريم: {sig['timeframe']} | قوة الإشارة: <code>{sig['strength']:+.1f}</code>",
         f"🏦 المنصة: <code>{sig['exchange']}</code>",
@@ -85,6 +87,7 @@ def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
         "first_entry": {"idx": si, "price": entry, "ts": df["ts"].iloc[si]},
         "second_entry": None,
         "stop_loss": entry - d * sd,
+        "tp_be": entry + d * 1.0 * sd,
         "tp1": entry + d * cfg["rr"] * sd,
         "strength": sig["strength"],
     }
@@ -289,22 +292,24 @@ def _save_watch() -> None:
 
 
 def _register_watch(asset_key: str, sig: dict, plan: dict | None, chat_id: int) -> None:
-    """يسجّل أهداف الصيدة الحالية لمتابعتها حتى تتحقق (يستبدل القديمة)."""
+    """يسجّل أهداف الصيدة الحالية لمتابعتها حتى تتحقق (مع هدف التأمين 1R والهدف الكامل)."""
     fe = (plan or {}).get("first_entry") or {}
     entry = float(fe.get("price") or sig["price"])
     tp1 = (plan or {}).get("tp1")
     if not tp1:
         return
     direction = sig.get("direction", "long")
-    # لو الهدف متحقق أصلاً لحظة الإشارة → لا معنى للمتابعة
     if direction == "long" and sig["price"] >= float(tp1):
         return
     if direction != "long" and sig["price"] <= float(tp1):
         return
     stop = (plan or {}).get("stop_loss")
+    tp_be = (plan or {}).get("tp_be")
     _watch[asset_key] = {
         "direction": direction,
         "entry": entry,
+        "tp_be": float(tp_be) if tp_be else None,
+        "be_locked": False,
         "tp1": float(tp1),
         "stop": float(stop) if stop else None,
         "opened_ts": time.time(),
@@ -345,7 +350,7 @@ def _hit_chart_sync(asset_key: str, price: float, watch: dict) -> bytes | None:
 
 
 async def check_signal_targets(bot) -> int:
-    """يفحص الصيدات المفتوحة: هل وصل السعر للهدف أو للوقف؟ يرسل تنبيهاً مع الشارت."""
+    """يفحص الصيدات المفتوحة: تأمين الوقف عند 1R (Break-Even)، أو وصول الهدف الكامل، أو ضرب الوقف."""
     if not _watch:
         return 0
     fired = 0
@@ -355,20 +360,53 @@ async def check_signal_targets(bot) -> int:
         except Exception:  # noqa: BLE001
             continue
         direction = w.get("direction", "long")
+        tp_be = w.get("tp_be")
+        be_locked = bool(w.get("be_locked"))
+        name = assets.get(key)["name"]
+
+        # 1) فحص وصول الهدف الأول (1R) لتأمين الوقف على الدخول (Break-Even)
+        if tp_be and not be_locked:
+            reached_be = (direction == "long" and price >= tp_be) or (direction != "long" and price <= tp_be)
+            if reached_be and ((direction == "long" and price < w["tp1"]) or (direction != "long" and price > w["tp1"])):
+                w["be_locked"] = True
+                w["stop"] = w["entry"]
+                _save_watch()
+                be_text = (
+                    f"🔒 <b>تأمين الصيدة (1:1) — {name}!</b>\n\n"
+                    f"📍 الدخول: <code>${w['entry']:,.2f}</code>\n"
+                    f"✅ وصل الهدف الأول: <code>${tp_be:,.2f}</code>\n"
+                    f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
+                    f"🛡 <b>تم نقل الوقف لنقطة الدخول (${w['entry']:,.2f}) تلقائياً — الصفقة الآن بدون مخاطرة والهدف القادم ${w['tp1']:,.2f} 🎯</b>"
+                )
+                for chat_id in w.get("chat_ids", []):
+                    try:
+                        await bot.send_message(int(chat_id), be_text, parse_mode="HTML")
+                    except Exception:  # noqa: BLE001
+                        logging.exception("فشل إرسال تنبيه التأمين %s", key)
+                continue
+
+        # 2) فحص الهدف الكامل أو الوقف
         if direction == "long":
             hit = "tp" if price >= w["tp1"] else ("sl" if w.get("stop") and price <= w["stop"] else None)
         else:
             hit = "tp" if price <= w["tp1"] else ("sl" if w.get("stop") and price >= w["stop"] else None)
         if not hit:
             continue
-        name = assets.get(key)["name"]
         if hit == "tp":
-            head = f"🎯 <b>الهدف تحقق — {name}!</b>"
+            head = f"🎯 <b>الهدف الكامل تحقق — {name}!</b>"
             body = (
                 f"📍 الدخول: <code>${w['entry']:,.2f}</code>\n"
                 f"🎯 الهدف: <code>${w['tp1']:,.2f}</code>\n"
                 f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
-                f"✅ الصيدة وصلت هدفها — شوف الشارت 👆"
+                f"✅ الصيدة وصلت هدفها الكامل — شوف الشارت 👆"
+            )
+        elif w.get("be_locked"):
+            head = f"🛡 <b>خروج على الدخول بعد ربح الهدف الأول — {name}</b>"
+            body = (
+                f"📍 الدخول (الوقف المؤمّن): <code>${w['entry']:,.2f}</code>\n"
+                f"✅ الهدف الأول المحقق سابقاً: <code>${tp_be:,.2f}</code>\n"
+                f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
+                f"🔒 انتهت الصيدة بأمان بدون أي خسارة بعد تأمين الهدف الأول."
             )
         else:
             head = f"🛑 <b>ضرب الوقف — {name}</b>"

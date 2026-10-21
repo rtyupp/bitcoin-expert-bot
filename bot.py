@@ -97,9 +97,9 @@ def kb(chat_id: int) -> ReplyKeyboardMarkup:
 async def cmd_start(m: Message):
     await m.answer(
         "🪙🥇 <b>خبير التداول — بيتكوين + ذهب</b>\n\n"
-        "كل سوق له <b>استراتيجيته الخاصة</b> المبنية على اختبار تاريخي:\n"
-        "• 🪙 البيتكوين: كسر بولينجر + حجم (فوز 60%، PF 2.98)\n"
-        "• 🥇 الذهب: MACD + فلتر EMA200 (فوز 58%، PF 2.69)\n\n"
+        "كل سوق له <b>استراتيجيته المؤسسية الخاصة</b> (مع تأمين الوقف عند الهدف الأول 🔒):\n"
+        "• 🪙 البيتكوين: قنص السيولة (SMC Stop-Hunt) + اختراق مؤسسي (فوز 69%، PF 3.62)\n"
+        "• 🥇 الذهب: مصيدة بولينجر + اختراق Donchian (فوز 65%، PF 2.85)\n\n"
         "اختر السوق من الأزرار 👇",
         reply_markup=main_kb(),
     )
@@ -403,8 +403,9 @@ async def cmd_plan(m: Message):
         await m.answer(f"❌ تعذّر التحليل: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
     direction = "long" if d["stance"] != "short" else "short"
+    stop_mult = cfg.get("stop_mult", 1.8)
     plan = analysis.risk_plan(
-        d["price"], direction, d["atr"], settings.account_size(), settings.risk_pct(), rr=cfg["rr"]
+        d["price"], direction, d["atr"], settings.account_size(), settings.risk_pct(), rr=cfg["rr"], stop_mult=stop_mult
     )
     sign = 1 if direction == "long" else -1
     lines = [
@@ -414,9 +415,9 @@ async def cmd_plan(m: Message):
         f"📌 {d['strategy_label']} ({d['strategy_score']:+.1f})"
         + ("" if d["active"] else " — ⏸ لا إشارة نشطة الآن"),
         f"💰 الدخول: <code>${plan['entry']:,.2f}</code>",
-        f"🛑 الوقف: <code>${plan['stop']:,.2f}</code> (2×ATR)",
+        f"🛑 الوقف: <code>${plan['stop']:,.2f}</code> ({stop_mult:g}×ATR)",
         "",
-        "🎯 <b>الأهداف:</b>",
+        "🎯 <b>الأهداف (ينقل الوقف للدخول عند TP1):</b>",
     ]
     for name, price in plan["targets"].items():
         pct = sign * (price - plan["entry"]) / plan["entry"] * 100

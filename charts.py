@@ -23,28 +23,54 @@ def _ind(df):
 def signal_series(df, ind, cfg) -> np.ndarray:
     """سلسلة إشارات استراتيجية الأصل لكل شمعة (نفس منطق التنبيه)."""
     c = df["close"].values
+    o = df["open"].values
+    h = df["high"].values
+    l = df["low"].values
+    vol = df["volume"].values
     n = len(df)
     out = np.zeros(n)
 
-    if cfg["strategy"] == "bb_vol":
-        up = ind["bb_up"].values
-        lo = ind["bb_lo"].values
-        v20 = pd.Series(ind["vol20"]).fillna(0).values
-        vol = df["volume"].values
-        mult = cfg["volume_mult"]
-        with np.errstate(invalid="ignore"):
-            out = np.where((c > up) & (vol > mult * v20), 1.0, out)
-            out = np.where((c < lo) & (vol > mult * v20), -1.0, out)
-    else:  # macd_ema200
-        m = ind["macd"].macd().values
-        s = ind["macd"].macd_signal().values
-        e = ind["ema200"].values if ind["ema200"] is not None else np.full(n, np.nan)
-        above = c > e
-        mu, su = np.roll(m, 1), np.roll(s, 1)
-        out = np.where((m > s) & (mu <= su) & above, 1.0, out)
-        out = np.where((m < s) & (mu >= su) & (~above), -1.0, out)
-        out = np.where((out == 0) & (m > s) & above, 0.5, out)
-        out = np.where((out == 0) & (m < s) & (~above), -0.5, out)
+    up = ind["bb_up"].values
+    lo = ind["bb_lo"].values
+    v20 = pd.Series(ind["vol20"]).fillna(0).values
+    e20 = ind["ema20"].values
+    e50 = ind["ema50"].values
+    e200 = ind["ema200"].values if ind["ema200"] is not None else e50
+    rsi = pd.Series(ind["rsi"]).fillna(50).values
+    adx = pd.Series(ind["adx"]).fillna(20).values if ind.get("adx") is not None else np.full(n, 20.0)
+    sw20_hi = pd.Series(ind["don20_hi"]).fillna(pd.Series(up)).values
+    sw20_lo = pd.Series(ind["don20_lo"]).fillna(pd.Series(lo)).values
+    mult = cfg.get("volume_mult", 1.5)
+
+    kind = cfg["strategy"]
+    if kind in ("smc_liquidity", "bb_vol"):
+        for i in range(20, n - 1):
+            vol_ok = v20[i] > 0 and vol[i] > mult * v20[i]
+            swept_lo = (l[i] < sw20_lo[i] and c[i] > sw20_lo[i]) or (
+                l[i - 1] < sw20_lo[i - 1] and c[i] > sw20_lo[i] and c[i] > h[i - 1]
+            )
+            bb_fake_lo = c[i - 1] < lo[i - 1] and c[i] > lo[i] and c[i] > h[i - 1]
+            swept_hi = (h[i] > sw20_hi[i] and c[i] < sw20_hi[i]) or (
+                h[i - 1] > sw20_hi[i - 1] and c[i] < sw20_hi[i] and c[i] < l[i - 1]
+            )
+            bb_fake_hi = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < l[i - 1]
+            if (swept_lo or bb_fake_lo) and c[i] > o[i] and rsi[i] < 55:
+                out[i] = 1.0
+            elif c[i] > up[i] and c[i] > sw20_hi[i] and vol_ok and e20[i] > e50[i] and c[i] > e200[i] and rsi[i] < 78:
+                out[i] = 1.0
+            elif (swept_hi or bb_fake_hi) and c[i] < o[i] and rsi[i] > 50 and (c[i] < e200[i] or rsi[i - 1] > 68):
+                out[i] = -1.0
+    else:  # bb_trap_donchian / macd_ema200
+        for i in range(20, n - 1):
+            vol_ok = v20[i] > 0 and vol[i] > mult * v20[i]
+            bb_fake_lo = c[i - 1] < lo[i - 1] and c[i] > lo[i] and c[i] > o[i]
+            bb_fake_hi = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < o[i]
+            don_up = c[i] > sw20_hi[i] and e20[i] > e50[i] and c[i] > e200[i] and adx[i] > 22 and vol_ok
+            don_dn = c[i] < sw20_lo[i] and e20[i] < e50[i] and c[i] < e200[i] and adx[i] > 22 and vol_ok
+            if (bb_fake_lo and (c[i] > e200[i] or rsi[i - 1] < 35)) or don_up:
+                out[i] = 1.0
+            elif (bb_fake_hi and (c[i] < e200[i] or rsi[i - 1] > 65)) or don_dn:
+                out[i] = -1.0
 
     out[:20] = 0
     out[-1] = 0  # الشمعة الحية لم تُغلق — لا تُعتبر إشارة

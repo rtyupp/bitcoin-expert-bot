@@ -78,66 +78,98 @@ def indicators(df):
 
 
 def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
-    """إشارة الاستراتيجية المخصصة للأصل → (نقاط، وصف، أسباب).
+    """إشارة الاستراتيجية الاحترافية المخصصة للأصل → (نقاط، وصف، أسباب).
 
-    البيتكوين: كسر بولينجر + حجم (PF 2.98 في الاختبار التاريخي)
-    الذهب:     تقاطع MACD مع فلتر EMA200 (PF 2.69)
+    البيتكوين (smc_liquidity): قنص السيولة (SMC Stop-Hunt / Bear Trap Reclaim) + اختراق مؤسسي صاعد
+    الذهب (bb_trap_donchian): مصيدة الكسر الكاذب لبولينجر + اختراق قناة Donchian 20 مع الاتجاه
     """
-    c, v = df["close"], df["volume"]
+    c, o, h, l, v = df["close"], df["open"], df["high"], df["low"], df["volume"]
     kind = cfg["strategy"]
+    if len(c) < 25:
+        return 0.0, "بيانات غير كافية", []
     i = -2 if len(c) >= 2 else -1  # آخر شمعة مغلقة — الحية ما زالت تتشكل
+    ip = i - 1
 
-    if kind == "bb_vol":
-        up, lo = float(ind["bb_up"].iloc[i]), float(ind["bb_lo"].iloc[i])
-        v20 = float(ind["vol20"].iloc[i]) if ind["vol20"].iloc[i] == ind["vol20"].iloc[i] else 0.0
-        vol_ok = bool(v20 and v.iloc[i] > cfg["volume_mult"] * v20)
-        vol_txt = f"حجم {v.iloc[i] / v20:.1f}×" if v20 else "حجم —"
-        # Determine market regime based on Bitcoin halving cycle
-        ts = df['ts'].iloc[i] if 'ts' in df.columns else datetime.datetime.now(datetime.timezone.utc)
+    up, lo = float(ind["bb_up"].iloc[i]), float(ind["bb_lo"].iloc[i])
+    up_p, lo_p = float(ind["bb_up"].iloc[ip]), float(ind["bb_lo"].iloc[ip])
+    sw20_hi = float(ind["don20_hi"].iloc[i]) if ind["don20_hi"].iloc[i] == ind["don20_hi"].iloc[i] else up
+    sw20_lo = float(ind["don20_lo"].iloc[i]) if ind["don20_lo"].iloc[i] == ind["don20_lo"].iloc[i] else lo
+    sw20_hi_p = float(ind["don20_hi"].iloc[ip]) if ind["don20_hi"].iloc[ip] == ind["don20_hi"].iloc[ip] else up_p
+    sw20_lo_p = float(ind["don20_lo"].iloc[ip]) if ind["don20_lo"].iloc[ip] == ind["don20_lo"].iloc[ip] else lo_p
+    v20 = float(ind["vol20"].iloc[i]) if ind["vol20"].iloc[i] == ind["vol20"].iloc[i] else 0.0
+    vol_ratio = float(v.iloc[i]) / v20 if v20 else 1.0
+    e20 = float(ind["ema20"].iloc[i])
+    e50 = float(ind["ema50"].iloc[i])
+    e200 = float(ind["ema200"].iloc[i]) if ind["ema200"] is not None else e50
+    rsi_now = float(ind["rsi"].iloc[i])
+    rsi_prev = float(ind["rsi"].iloc[ip])
+    adx_now = float(ind["adx"].iloc[i]) if ind["adx"] is not None and ind["adx"].iloc[i] == ind["adx"].iloc[i] else 20.0
+
+    if kind in ("smc_liquidity", "bb_vol"):
+        ts = df["ts"].iloc[i] if "ts" in df.columns else datetime.datetime.now(datetime.timezone.utc)
         phase = halving_utils.halving_phase(ts)
-        # Long breakout allowed in bull or side phases
-        if c.iloc[i] > up and vol_ok and phase != "bear":
-            return 3.5, "كسر صاعد مؤكد بالحجم (المرحلة: {} )".format(phase), [f"اختراق الحد العلوي لبولينجر ({up:,.0f}) مع {vol_txt}"]
-        # Short breakout allowed in bear or side phases
-        if c.iloc[i] < lo and vol_ok and phase != "bull":
-            return -3.5, "كسر هابط مؤكد بالحجم (المرحلة: {} )".format(phase), [f"اختراق الحد السفلي لبولينجر ({lo:,.0f}) مع {vol_txt}"]
-        # Near breakout signals keep original behavior but include phase note
-        if c.iloc[i] > up * 0.995:
-            return 1.0, f"على وشك اختراق صاعد (المرحلة: {phase})", ["السعر ملاصق للحد العلوي — ينقصه تأكيد الحجم"]
-        if c.iloc[i] < lo * 1.005:
-            return -1.0, f"على وشك اختراق هابط (المرحلة: {phase})", ["السعر ملاصق للحد السفلي — ينقصه تأكيد الحجم"]
-        return 0.0, "لا اختراق — انتظار", ["السعر داخل نطاق بولينجر"]
+        vol_ok = vol_ratio > cfg.get("volume_mult", 1.5)
 
+        # 1) صيدة سيولة شرائية (SMC Bear Trap / Stop-Hunt Reclaim)
+        swept_20_lo = (l.iloc[i] < sw20_lo and c.iloc[i] > sw20_lo) or (
+            l.iloc[ip] < sw20_lo_p and c.iloc[i] > sw20_lo and c.iloc[i] > h.iloc[ip]
+        )
+        bb_fake_lo = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > h.iloc[ip]
+        if (swept_20_lo or bb_fake_lo) and c.iloc[i] > o.iloc[i] and rsi_now < 55 and phase != "bear":
+            return (
+                3.5,
+                "صيدة سيولة شرائية — كنس قاع وارتداد (Bear Trap)",
+                [f"كنس سيولة القاع ({sw20_lo:,.0f}) وإغلاق شرائي مؤكد داخل النطاق"],
+            )
 
-    if kind == "macd_ema200":
-        m, s = ind["macd"].macd(), ind["macd"].macd_signal()
-        e200 = ind["ema200"]
-        if e200 is None:
-            return 0.0, "بيانات غير كافية", ["تحتاج 200 شمعة لحساب EMA200"]
-        above = bool(c.iloc[i] > e200.iloc[i])
-        cross_up = bool(m.iloc[i] > s.iloc[i] and m.iloc[i - 1] <= s.iloc[i - 1])
-        cross_dn = bool(m.iloc[i] < s.iloc[i] and m.iloc[i - 1] >= s.iloc[i - 1])
-        don_hi = float(ind["don55_hi"].iloc[i]) if ind["don55_hi"].iloc[i] == ind["don55_hi"].iloc[i] else 0.0
-        don_lo = float(ind["don55_lo"].iloc[i]) if ind["don55_lo"].iloc[i] == ind["don55_lo"].iloc[i] else 0.0
-        if cross_up and above:
-            return 3.5, "تقاطع MACD صاعد فوق EMA200", ["تقاطع صاعد حديث مع اتجاه عام صاعد"]
-        if cross_dn and not above:
-            return -3.5, "تقاطع MACD هابط تحت EMA200", ["تقاطع هابط حديث مع اتجاه عام هابط"]
-        if m.iloc[i] > s.iloc[i] and above:
-            score = 1.5
-            reasons = ["MACD إيجابي والسعر فوق EMA200"]
-            if don_hi and c.iloc[i] > don_hi:
-                score += 1.5
-                reasons.append(f"كسر أعلى قمة 55 شمعة ({don_hi:,.0f})")
-            return score, "اتجاه صاعد", reasons
-        if m.iloc[i] < s.iloc[i] and not above:
-            score = -1.5
-            reasons = ["MACD سلبي والسعر تحت EMA200"]
-            if don_lo and c.iloc[i] < don_lo:
-                score -= 1.5
-                reasons.append(f"كسر أدنى قاع 55 شمعة ({don_lo:,.0f})")
-            return score, "اتجاه هابط", reasons
-        return 0.0, "لا توافق — انتظار", ["MACD والاتجاه العام غير متوافقين"]
+        # 2) اختراق مؤسسي صاعد (فقط مع توافق الاتجاه الكامل EMA20>EMA50 وفوق EMA200 وحجم عالٍ)
+        if c.iloc[i] > up and c.iloc[i] > sw20_hi and vol_ok and e20 > e50 and c.iloc[i] > e200 and rsi_now < 78 and phase != "bear":
+            return (
+                3.5,
+                f"اختراق مؤسسي صاعد بحجم {vol_ratio:.1f}×",
+                [f"اختراق قمة 20 شمعة ({sw20_hi:,.0f}) وبولينجر مع اتجاه صاعد وحجم {vol_ratio:.1f}×"],
+            )
+
+        # 3) صيدة سيولة بيعية (Bull Trap Sweep) عند التشبع أو تحت EMA200
+        swept_20_hi = (h.iloc[i] > sw20_hi and c.iloc[i] < sw20_hi) or (
+            h.iloc[ip] > sw20_hi_p and c.iloc[i] < sw20_hi and c.iloc[i] < l.iloc[ip]
+        )
+        bb_fake_hi = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < l.iloc[ip]
+        if (swept_20_hi or bb_fake_hi) and c.iloc[i] < o.iloc[i] and rsi_now > 50 and (c.iloc[i] < e200 or rsi_prev > 68):
+            return (
+                -3.5,
+                "صيدة سيولة بيعية — كنس قمة ورفض (Bull Trap)",
+                [f"كنس سيولة القمة ({sw20_hi:,.0f}) وإغلاق بيعي رافض داخل النطاق"],
+            )
+
+        # إشارات تحذيرية (قرب المناطق الحساسة)
+        if l.iloc[i] <= sw20_lo * 1.003:
+            return 1.0, "مراقبة سيولة القاع — انتظار شمعة الاسترداد", [f"السعر يختبر قاع السيولة ({sw20_lo:,.0f}) — انتظر الإغلاق الإيجابي"]
+        if c.iloc[i] > up * 0.996 and e20 > e50:
+            return 1.0, "قرب اختراق صاعد — ينقصه تأكيد الحجم", ["السعر يختبر الحد العلوي لبولينجر"]
+        return 0.0, "داخل النطاق — انتظار صيدة سيولة", ["لا يوجد كنس سيولة أو اختراق مؤسسي حالياً"]
+
+    if kind in ("bb_trap_donchian", "macd_ema200"):
+        vol_ok = vol_ratio > cfg.get("volume_mult", 1.2)
+        bb_fake_lo = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > o.iloc[i]
+        bb_fake_hi = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < o.iloc[i]
+        don_up = c.iloc[i] > sw20_hi and e20 > e50 and c.iloc[i] > e200 and adx_now > 22 and vol_ok
+        don_dn = c.iloc[i] < sw20_lo and e20 < e50 and c.iloc[i] < e200 and adx_now > 22 and vol_ok
+
+        if bb_fake_lo and (c.iloc[i] > e200 or rsi_prev < 35):
+            return 3.5, "ارتداد مصيدة بولينجر السفلية (Bear Trap)", [f"كسر كاذب تحت بولينجر ({lo_p:,.0f}) واسترداد شرائي مباشر"]
+        if don_up:
+            return 3.5, "اختراق قناة Donchian 20 صاعد مع الاتجاه", [f"اختراق قمة 20 شمعة ({sw20_hi:,.0f}) بدعم ADX={adx_now:.0f} وفوق EMA200"]
+        if bb_fake_hi and (c.iloc[i] < e200 or rsi_prev > 65):
+            return -3.5, "ارتداد مصيدة بولينجر العلوية (Bull Trap)", [f"كسر كاذب فوق بولينجر ({up_p:,.0f}) ورفض بيعي مباشر"]
+        if don_dn:
+            return -3.5, "كسر قناة Donchian 20 هابط مع الاتجاه", [f"كسر قاع 20 شمعة ({sw20_lo:,.0f}) بدعم ADX={adx_now:.0f} وتحت EMA200"]
+
+        if c.iloc[i] > e200 and e20 > e50:
+            return 1.0, "ميل صاعد فوق EMA200 — انتظار نقطة قنص", ["الاتجاه العام صاعد — بانتظار مصيدة سيولة أو اختراق"]
+        if c.iloc[i] < e200 and e20 < e50:
+            return -1.0, "ميل هابط تحت EMA200 — انتظار نقطة قنص", ["الاتجاه العام هابط — بانتظار مصيدة سيولة أو كسر"]
+        return 0.0, "تذبذب محايد — انتظار", ["لا توجد مصيدة بولينجر أو اختراق قناة مكتمل"]
 
     return 0.0, "—", []
 
@@ -517,16 +549,11 @@ def breakout_signal(timeframe: str = "1h", asset: str = "btc") -> dict | None:
     if abs(strat_score) < 2.0:
         return None
     i = -2 if len(df) >= 2 else -1
-    e20 = float(ind["ema20"].iloc[i])
-    e50 = float(ind["ema50"].iloc[i])
-    v20 = float(ind["vol20"].iloc[i]) if ind["vol20"].iloc[i] == ind["vol20"].iloc[i] else 0.0
-    vol_ratio = float(df["volume"].iloc[i]) / v20 if v20 else 1.0
     direction = "long" if strat_score > 0 else "short"
-    if direction == "long" and e20 <= e50:
+    phase = halving_utils.halving_phase()
+    if direction == "long" and phase == "bear":
         return None
-    if direction == "short" and e20 >= e50:
-        return None
-    if cfg.get("volume_mult", 0) > 0 and vol_ratio <= 1.5:
+    if direction == "short" and phase == "bull":
         return None
     return {
         "asset": cfg["key"],
@@ -553,15 +580,16 @@ def risk_plan(
     account_size: float = 0.0,
     risk_pct: float = 1.0,
     rr: float = 2.0,
+    stop_mult: float = 1.8,
 ) -> dict:
-    """خطة إدارة مخاطر: وقف 2×ATR + 3 أهداف حسب نسبة الأصل + حجم الصفقة."""
+    """خطة إدارة مخاطر احترافية: وقف stop_mult×ATR + تأمين عند TP1 (1R) + هدف كامل TP2 + TP3."""
     sign = 1 if direction == "long" else -1
-    stop_dist = 2.0 * atr
+    stop_dist = stop_mult * atr
     stop = entry - sign * stop_dist
     targets = {
-        f"TP1 (1:{_rr_label(rr / 2)})": entry + sign * (rr / 2) * stop_dist,
-        f"TP2 (1:{_rr_label(rr)})": entry + sign * rr * stop_dist,
-        f"TP3 (1:{_rr_label(rr * 1.5)})": entry + sign * rr * 1.5 * stop_dist,
+        "TP1 (1:1 — تأمين الوقف للدخول 🔒)": entry + sign * 1.0 * stop_dist,
+        f"TP2 (1:{_rr_label(rr)} — الهدف الكامل 🎯)": entry + sign * rr * stop_dist,
+        f"TP3 (1:{_rr_label(rr * 1.5)} — هدف ممتد 🚀)": entry + sign * rr * 1.5 * stop_dist,
     }
     plan = {
         "entry": entry,
@@ -569,6 +597,8 @@ def risk_plan(
         "atr": atr,
         "stop": stop,
         "stop_dist": stop_dist,
+        "stop_mult": stop_mult,
+        "tp1_be": entry + sign * 1.0 * stop_dist,
         "targets": targets,
         "rr": rr,
     }
@@ -646,17 +676,10 @@ def decision(asset: str = "btc") -> dict:
         reasons.insert(0, f"نموذج {ml['model']}: احتمال صعود {prob:.1%} (AUC {ml['metrics']['auc']})")
     reasons.insert(0, f"نظام السوق: {reg.get('name', '—')} — {reg.get('note', '')}")
 
-    # Additional filters for "إشارة حقيقية"
-    # 1) تقاطع EMA20/EMA50 (إشارة متوافقة مع الاتجاه)
-    ma_aligned = (r.ema20 > r.ema50) if strat >= 0 else (r.ema20 < r.ema50)
-    # 2) حجم مرتفع (أكثر من 1.5× المتوسط للبيتكوين؛ الذهب معفى لأن volume_mult=0)
-    high_vol = (r.vol_ratio > 1.5) if cfg.get("volume_mult", 0) > 0 else True
-    # 3) مرحلة السوق وفق دورة الانقسام (ليس عكس الاتجاه)
+    # الإشارة تُعتبر نشطة فقط إذا تحققت شروط الاستراتيجية القوية (|strat| >= 2.0) وتوافقت مع دورة السوق
     phase = halving_utils.halving_phase()
     phase_ok = (phase != "bear") if strat >= 0 else (phase != "bull")
-
-    # الإشارة تُعتبر نشطة فقط إذا تحققت جميع الشروط مع قوة الاستراتيجية الأساسية (≥ 2.0)
-    active_signal = ma_aligned and high_vol and phase_ok and abs(strat) >= 2.0
+    active_signal = phase_ok and abs(strat) >= 2.0
 
     return {
         "asset": asset,

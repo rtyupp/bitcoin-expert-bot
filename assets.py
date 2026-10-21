@@ -19,39 +19,39 @@ ASSETS: dict[str, dict] = {
         "symbol": "BTC/USDT",
         "name": "البيتكوين",
         "emoji": "🪙",
-        # الاستراتيجية الأساسية
-        "strategy": "bb_vol",
-        "strategy_name": "كسر بولينجر + حجم",
-        "strategy_en": "BB Breakout + Volume",
-        "strategy_note": "الأقوى على البيتكوين: يدخل مع اختراق مؤكد بالحجم، هدف 1:3",
-        "rr": 3.0,              # نسبة الهدف للوقف
-        "stop_mult": 2.0,       # وقف = 2×ATR
-        "volume_mult": 1.5,     # تأكيد الحجم
-        "threshold": 4.0,       # عتبة إطلاق الصيدة
+        # الاستراتيجية الأساسية: قنص السيولة (SMC Stop-Hunt) + اختراق مؤسسي
+        "strategy": "smc_liquidity",
+        "strategy_name": "قنص السيولة (SMC) + اختراق مؤسسي",
+        "strategy_en": "SMC Liquidity Sweep + Institutional Breakout",
+        "strategy_note": "سر الحيتان: يدخل عند كنس ستوبات القيعان (Bear Trap) والارتداد داخل النطاق، أو مع اختراق مؤسسي مدعوم بالحجم والاتجاه + تأمين الوقف عند TP1",
+        "rr": 3.0,              # نسبة الهدف للوقف الكامل (مع تأمين عند 1R)
+        "stop_mult": 1.8,       # وقف = 1.8×ATR
+        "volume_mult": 1.5,     # تأكيد الحجم للاختراق
+        "threshold": 3.5,       # عتبة إطلاق الصيدة
         "weights": {            # أوزان المؤشرات لهذا الأصل
-            "trend": 2.0, "cross": 1.2, "rsi": 0.5,
+            "trend": 2.0, "cross": 1.2, "rsi": 0.8,
             "macd": 0.8, "bb": 1.8, "vol": 1.2, "chg": 0.5,
         },
-        "backtest": {"trades": 73, "win": 60.3, "pf": 2.98, "avg_r": 0.74},
+        "backtest": {"trades": 16, "win": 68.8, "pf": 3.62, "avg_r": 0.82},
     },
     "gold": {
         "key": "gold",
         "symbol": "PAXG/USDT",
         "name": "الذهب",
         "emoji": "🥇",
-        "strategy": "macd_ema200",
-        "strategy_name": "MACD + فلتر EMA200",
-        "strategy_en": "MACD + EMA200 Filter",
-        "strategy_note": "الأقوى على الذهب: تقاطع MACD باتجاه الاتجاه العام، هدف 1:2",
+        "strategy": "bb_trap_donchian",
+        "strategy_name": "مصيدة بولينجر + اختراق Donchian",
+        "strategy_en": "BB Fakeout Trap + Donchian Trend",
+        "strategy_note": "الأقوى على الذهب: يصطاد الكسر الكاذب لبولينجر بعد كنس السيولة، أو يدخل مع كسر قناة 20 باتجاه الاتجاه العام (ADX>22) + تأمين الوقف عند TP1",
         "rr": 2.0,
         "stop_mult": 2.0,
-        "volume_mult": 0.0,     # الحجم غير موثوق في الذهب الرمزي
+        "volume_mult": 1.2,
         "threshold": 3.0,
         "weights": {
-            "trend": 2.2, "cross": 0.8, "rsi": 0.5,
-            "macd": 2.0, "bb": 0.6, "vol": 0.3, "chg": 0.4,
+            "trend": 2.2, "cross": 0.8, "rsi": 0.8,
+            "macd": 1.6, "bb": 1.4, "vol": 0.4, "chg": 0.4,
         },
-        "backtest": {"trades": 48, "win": 58.3, "pf": 2.69, "avg_r": 0.58},
+        "backtest": {"trades": 23, "win": 65.2, "pf": 2.85, "avg_r": 0.52},
     },
 }
 
