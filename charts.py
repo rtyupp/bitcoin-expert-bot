@@ -5,27 +5,13 @@ import pandas as pd
 import assets
 import chartimg
 
-_EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
-
-
 def fetch_4h(symbol: str, days: int = 20):
-    """جلب شموع 4h مع تبديل المنصات تلقائياً عند الحجب."""
-    import ccxt
+    """جلب شموع 4h — REST مباشر مع تبديل المصادر تلقائياً."""
+    import markets
 
     limit = min(days * 6, 300)
-    errors = []
-    for eid in _EXCHANGES:
-        try:
-            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 15000})
-            raw = ex.fetch_ohlcv(symbol, "4h", limit=limit)
-            if not raw:
-                raise ValueError("لا بيانات")
-            df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
-            df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-            return df
-        except Exception as err:  # noqa: BLE001
-            errors.append(f"{eid}:{type(err).__name__}")
-    raise RuntimeError("تعذّر جلب البيانات: " + "; ".join(errors))
+    df, _ = markets.fetch_ohlcv(symbol, "4h", limit)
+    return df
 
 
 def _ind(df):

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import assets
 
-EXCHANGES = ("binance", "okx", "bybit", "kraken", "coinbase")
+EXCHANGES = ("binance", "bybit", "okx")
 MAX_SCORE = 9.5
 
 # مجمع خيوط لإطارات التحليل — يعمل بالتوازي بدل التسلسل
@@ -29,80 +29,25 @@ def confidence_pct(score: float) -> int:
     return round(min(abs(score) / MAX_SCORE, 1.0) * 100)
 
 
-_GOOD_EXCHANGE: str | None = None
-
-
-def _order() -> tuple[str, ...]:
-    if _GOOD_EXCHANGE:
-        return (_GOOD_EXCHANGE,) + tuple(e for e in EXCHANGES if e != _GOOD_EXCHANGE)
-    return EXCHANGES
-
-
 def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 250):
-    """جلب الشموع — يبدأ من المنصة الناجحة سابقاً (يوفّر محاولات فاشلة بطيئة)."""
-    import ccxt
-    import pandas as pd
+    """جلب الشموع — REST مباشر بدون ccxt (طلب واحد لكل استدعاء، سريع)."""
+    import markets
 
-    global _GOOD_EXCHANGE
-    errors = []
-    for eid in _order():
-        try:
-            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
-            raw = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not raw:
-                raise ValueError("لا بيانات")
-            df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
-            df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-            _GOOD_EXCHANGE = eid
-            return df, eid
-        except Exception as err:  # noqa: BLE001
-            errors.append(f"{eid}: {type(err).__name__}")
-    raise RuntimeError("تعذّر جلب البيانات من كل المنصات: " + "; ".join(errors))
+    return markets.fetch_ohlcv(symbol, timeframe, limit)
 
 
 def ticker(symbol: str) -> tuple[float, float | None, str]:
     """السعر الحالي + تغير 24س."""
-    import ccxt
+    import markets
 
-    global _GOOD_EXCHANGE
-    for eid in _order():
-        try:
-            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
-            t = ex.fetch_ticker(symbol)
-            price = float(t["last"] or t["close"])
-            change = t.get("percentage")
-            _GOOD_EXCHANGE = eid
-            return price, change, eid
-        except Exception:  # noqa: BLE001
-            continue
-    raise RuntimeError("تعذّر جلب السعر من كل المنصات")
+    return markets.ticker(symbol)
 
 
 def live_ticker(symbol: str) -> dict:
     """سعر لحظي كامل (آخر صفقة) + أعلى/أدنى 24س + طابع زمني."""
-    import time
+    import markets
 
-    import ccxt
-
-    global _GOOD_EXCHANGE
-    for eid in _order():
-        try:
-            ex = getattr(ccxt, eid)({"enableRateLimit": True, "timeout": 12000})
-            t = ex.fetch_ticker(symbol)
-            if not t.get("last") and not t.get("close"):
-                continue
-            _GOOD_EXCHANGE = eid
-            return {
-                "price": float(t["last"] or t["close"]),
-                "change": t.get("percentage"),
-                "high": float(t.get("high") or 0),
-                "low": float(t.get("low") or 0),
-                "ts": time.time(),
-                "exchange": eid,
-            }
-        except Exception:  # noqa: BLE001
-            continue
-    raise RuntimeError("تعذّر جلب السعر اللحظي من كل المنصات")
+    return markets.live_ticker(symbol)
 
 
 def indicators(df):
