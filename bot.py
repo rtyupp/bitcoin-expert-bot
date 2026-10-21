@@ -196,6 +196,22 @@ async def cmd_recommend(m: Message):
         # لا إشارة قوية الآن → نتجنب إزعاج المستخدم برسالة تفصيلية
         await m.answer("⚪ لا إشارة صيد حقيقية حالياً ⏸", reply_markup=kb(m.chat.id))
         return
+    prob = f"{d['prob_up']:.1%}" if d["prob_up"] is not None else "—"
+    auc = d["ml_metrics"]["auc"] if d["ml_metrics"] else "—"
+    reg = d["regime"]
+    await m.answer(
+        f"{cfg['emoji']} <b>{d['name']} — {d['stance_ar']}</b>\n\n"
+        f"💰 السعر: <b>${d['price']:,.2f}</b>\n"
+        f"🎯 الاستراتيجية: {d['strategy']}\n"
+        f"📌 الحالة: <b>{d['strategy_label']}</b> ({d['strategy_score']:+.1f}) — نشطة الآن ✅\n"
+        f"🌊 النظام: <b>{reg.get('name')}</b> (كفاءة {reg.get('efficiency')})\n"
+        f"🤖 النموذج: احتمال صعود <b>{prob}</b> (AUC {auc})\n"
+        f"🎚 الثقة: <b>{d['confidence']}%</b>\n\n"
+        f"<b>الأسباب:</b>\n"
+        + "\n".join(f"  • {r}" for r in d["reasons"][:4])
+        + "\n\n⚠️ <i>ليست نصيحة مالية.</i>",
+        reply_markup=kb(m.chat.id),
+    )
 
 
 @router.message(Command("ml"))
@@ -242,13 +258,13 @@ async def cmd_ml(m: Message):
 
 
 @router.message(Command("price"))
-@router.message(F.text == "💰 السعر اللحظي")
+@router.message(F.text.in_({"💰 السعر اللحظي", "🔄"}))
 async def cmd_price(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     key = _sec(m.chat.id)
     cfg = assets.get(key)
     try:
-        t = await asyncio.to_thread(markets.tradingview_price, cfg["symbol"])
+        t = await asyncio.to_thread(markets.best_live_price, cfg["symbol"])
         fresh = max(0, int(time.time() - t["ts"]))
         txt = (
             f"{cfg['emoji']} <b>{cfg['name']} — سعر لحظي</b>\n\n"
@@ -260,7 +276,7 @@ async def cmd_price(m: Message):
             txt += f"أعلى/أدنى 24س: <code>{t['high']:,.2f} / {t['low']:,.2f}</code>\n"
         txt += (
             f"\n🕐 <i>تحديث قبل {fresh} ثانية</i> · 🏦 <code>{t['exchange']}</code>\n"
-            "اضغط 🔄 لإعادة التحديث"
+            "اضغط 💰 السعر اللحظي لإعادة التحديث"
         )
         await m.answer(txt, reply_markup=kb(m.chat.id))
     except Exception as e:  # noqa: BLE001
@@ -433,8 +449,9 @@ async def cmd_plan(m: Message):
 async def cmd_alert(m: Message):
     key = _sec(m.chat.id)
     cfg = assets.get(key)
-    parts = (m.text or "").split()
-    if len(parts) < 2:
+    text = (m.text or "").strip()
+    parts = text.split()
+    if text == "⏰ تنبيه سعر" or len(parts) < 2:
         await m.answer(
             f"⏰ <b>تنبيه سعر — {cfg['name']}</b>\n\n"
             f"أرسل: <code>/alert 85000</code>\n"
@@ -487,9 +504,8 @@ async def cmd_alerts(m: Message):
     lines.append("\nللحذف: /delalerts")
     try:
         await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
-    except Exception as e:
-        logging.exception("فشل إرسال خطة الصفقة")
-        # لا نرسل بديل لتجنب فشل آخر
+    except Exception:
+        logging.exception("فشل إرسال قائمة التنبيهات")
         return
 
 

@@ -153,7 +153,7 @@ def short_message(a: dict, symbol: str, dec: dict | None = None, live: dict | No
     d = a["direction"]
     fe, se = a["first_entry"], a["second_entry"]
     age = a["signal_age_hours"]
-    stale = age is not None and age >= 24
+    stale = age is not None and age > 48
     icon = "🟢" if d == "buy" else "🔴"
     word = "شراء" if d == "buy" else "بيع"
 
@@ -161,7 +161,7 @@ def short_message(a: dict, symbol: str, dec: dict | None = None, live: dict | No
     lines.append(f"🎯 {a.get('strategy', '')}")
     lines.append("")
     if stale:
-        lines.append(f"⚠️ <b>آخر إشارة تاريخية — قبل {age} ساعة (منتهية)</b>")
+        lines.append(f"⚠️ <b>آخر إشارة تاريخية — قبل {age} ساعة (تجاوزت 48 ساعة — منتهية)</b>")
     label = "آخر إشارة" if stale else "أول صيد"
     lines.append(f"{icon} <b>{label} ({word}):</b> <code>{fe['price']:,.2f}</code>")
     if se:

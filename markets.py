@@ -8,7 +8,10 @@
 
 الأشكال المعادة مطابقة لواجهة ccxt القديمة حتى لا يتغير أي مستدعي.
 """
+
 import time
+
+
 
 import httpx
 import pandas as pd
@@ -195,28 +198,118 @@ def live_ticker(symbol: str) -> dict:
 
 def tradingview_price(symbol: str) -> dict:
     """سعر لحظي من TradingView (سعر، تغير %, أعلى/أدنى 24س).
-    يعتمد على نقطة النهاية غير الرسمية https://scanner.tradingview.com/crypto/scan.
+    يعتمد على نقطة النهاية https://scanner.tradingview.com/crypto/scan عبر httpx المشترك.
     """
-    import requests
     base, quote = _pair(symbol)
-    ticker = f"BINANCE:{base}{quote}"  # مثال: BINANCE:BTCUSDT
     url = "https://scanner.tradingview.com/crypto/scan"
-    payload = {
-        "symbols": {"tickers": [ticker]},
-        "columns": ["close", "change", "high", "low", "exchange"]
-    }
-    resp = requests.post(url, json=payload, timeout=8)
-    resp.raise_for_status()
-    data = resp.json()
-    # البيانات تأتي في data["data"][0]["d"] بترتيب الأعمدة المحددة
-    d = data["data"][0]["d"]
-    price, change_percent, high, low, exchange = d
-    return {
-        "price": price,
-        "change": change_percent,
-        "high": high,
-        "low": low,
-        "ts": time.time(),
-        "exchange": exchange or "tradingview",
-    }
+    for exch in ("BINANCE", "OKX", "BYBIT"):
+        payload = {
+            "symbols": {"tickers": [f"{exch}:{base}{quote}"]},
+            "columns": ["close", "change", "high", "low", "exchange"],
+        }
+        try:
+            resp = _CLIENT.post(url, json=payload)
+            resp.raise_for_status()
+            rows = (resp.json() or {}).get("data") or []
+            if not rows or not rows[0].get("d"):
+                continue
+            price, change_percent, high, low, exchange = rows[0]["d"]
+            if price is None:
+                continue
+            return {
+                "price": float(price),
+                "change": float(change_percent) if change_percent is not None else None,
+                "high": float(high) if high is not None else 0.0,
+                "low": float(low) if low is not None else 0.0,
+                "ts": time.time(),
+                "exchange": f"TV:{exchange or exch}",
+            }
+        except Exception:  # noqa: BLE001
+            continue
+    raise RuntimeError(f"TradingView لم يُرجع سعراً لـ {symbol}")
+
+
+def xtb_price(symbol: str) -> dict:
+    """سعر لحظي من XTB (WebSocket مع HTTP fallback).
+    يحتاج المتغيّرات البيئية:
+        XTB_WS_URL   – رابط WebSocket (مثلاً wss://ws.xtb.com/demo أو wss://ws.xtb.com/real)
+        XTB_USER_ID  – رقم حساب XTB
+        XTB_PASSWORD – كلمة مرور XTB
+    تُعيد dict بالمفاتيح: price, change, high, low, ts, exchange.
+    """
+    import json
+    import os
+
+    ws_url = os.getenv("XTB_WS_URL", "wss://ws.xtb.com/demo")
+    user = os.getenv("XTB_USER_ID")
+    pwd = os.getenv("XTB_PASSWORD")
+    if not user or not pwd:
+        raise RuntimeError("XTB credentials غير مُعرفة في المتغيّرات البيئية")
+
+    base, _ = _pair(symbol)
+    xtb_sym = "GOLD" if base == "PAXG" else ("BITCOIN" if base == "BTC" else symbol.replace("/", ""))
+    ws = None
+    try:
+        import websocket  # type: ignore[import-untyped]
+
+        ws = websocket.create_connection(ws_url, timeout=8)
+        ws.send(json.dumps({"command": "login", "arguments": {"userId": user, "password": pwd}}))
+        resp = json.loads(ws.recv())
+        if not resp.get("status"):
+            raise RuntimeError(f"فشل دخول XTB WS: {resp.get('errorDescr')}")
+        ws.send(json.dumps({"command": "getSymbol", "arguments": {"symbol": xtb_sym}}))
+        resp = json.loads(ws.recv())
+        info = resp.get("returnData") or {}
+        if not info:
+            raise RuntimeError("XTB لم تُرجِع بيانات الرمز")
+        ask, bid = info.get("ask"), info.get("bid")
+        price = (float(ask) + float(bid)) / 2 if ask is not None and bid is not None else float(info["ask"])
+        high = float(info.get("high") or 0.0)
+        low = float(info.get("low") or 0.0)
+        return {"price": price, "change": None, "high": high, "low": low, "ts": time.time(), "exchange": "XTB"}
+    except Exception:  # noqa: BLE001
+        http_url = os.getenv("XTB_HTTP_URL", "https://xapi.xtb.com/demo")
+        login_r = _CLIENT.post(http_url, json={"command": "login", "arguments": {"userId": user, "password": pwd}})
+        login_r.raise_for_status()
+        login_data = login_r.json()
+        if not login_data.get("status"):
+            raise RuntimeError(f"فشل دخول XTB HTTP: {login_data.get('errorDescr')}")
+        session_id = login_data.get("streamSessionId")
+        sym_r = _CLIENT.post(
+            http_url,
+            json={"command": "getSymbol", "arguments": {"symbol": xtb_sym}, "streamSessionId": session_id},
+        )
+        sym_r.raise_for_status()
+        sym_data = sym_r.json()
+        info = sym_data.get("returnData") or {}
+        if not info:
+            raise RuntimeError("XTB لم تُرجِع بيانات الرمز عبر HTTP")
+        ask, bid = info.get("ask"), info.get("bid")
+        price = (float(ask) + float(bid)) / 2 if ask is not None and bid is not None else float(info["ask"])
+        high = float(info.get("high") or 0.0)
+        low = float(info.get("low") or 0.0)
+        return {"price": price, "change": None, "high": high, "low": low, "ts": time.time(), "exchange": "XTB"}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def best_live_price(symbol: str) -> dict:
+    """يجلب السعر اللحظي بالترتيب: XTB (إن وُجدت بيانات الدخول) → TradingView → المنصات المباشرة."""
+    import os
+
+    if os.getenv("XTB_USER_ID") and os.getenv("XTB_PASSWORD"):
+        try:
+            return xtb_price(symbol)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return tradingview_price(symbol)
+    except Exception:  # noqa: BLE001
+        return live_ticker(symbol)
+
+
 

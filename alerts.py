@@ -107,7 +107,7 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
     out: dict[str, dict] = {}
     for key in assets.keys():
         try:
-            sig = await asyncio.to_thread(analysis.breakout_signal, "4h", key)
+            sig = await asyncio.to_thread(analysis.breakout_signal, "1h", key)
         except Exception as e:  # noqa: BLE001
             out[key] = {"sent": False, "reason": f"fetch_failed: {type(e).__name__}"}
             continue

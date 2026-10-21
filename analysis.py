@@ -59,7 +59,7 @@ def indicators(df):
     c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
     bb = ta.volatility.BollingerBands(c, 20, 2)
     return {
-        "atr": ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range(),
+        "atr": ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range() if len(df) >= 15 else (h - l),
         "rsi": ta.momentum.RSIIndicator(c, 14).rsi(),
         "ema20": ta.trend.EMAIndicator(c, 20).ema_indicator(),
         "ema50": ta.trend.EMAIndicator(c, 50).ema_indicator(),
@@ -69,7 +69,7 @@ def indicators(df):
         "bb_mid": bb.bollinger_mavg(),
         "bb_lo": bb.bollinger_lband(),
         "vol20": v.rolling(20).mean(),
-        "adx": ta.trend.ADXIndicator(h, l, c, 14).adx(),
+        "adx": ta.trend.ADXIndicator(h, l, c, 14).adx() if len(df) >= 15 else None,
         "don55_hi": h.rolling(55).max().shift(1),
         "don55_lo": l.rolling(55).min().shift(1),
         "don20_hi": h.rolling(20).max().shift(1),
@@ -93,7 +93,7 @@ def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
         vol_ok = bool(v20 and v.iloc[i] > cfg["volume_mult"] * v20)
         vol_txt = f"حجم {v.iloc[i] / v20:.1f}×" if v20 else "حجم —"
         # Determine market regime based on Bitcoin halving cycle
-        ts = df['ts'].iloc[i] if 'ts' in df.columns else datetime.datetime.utcnow()
+        ts = df['ts'].iloc[i] if 'ts' in df.columns else datetime.datetime.now(datetime.timezone.utc)
         phase = halving_utils.halving_phase(ts)
         # Long breakout allowed in bull or side phases
         if c.iloc[i] > up and vol_ok and phase != "bear":
@@ -508,23 +508,35 @@ def multi_summary(asset: str = "btc") -> str:
     return "\n".join(lines)
 
 
-def breakout_signal(timeframe: str = "4h", asset: str = "btc") -> dict | None:
-    """إشارة الاستراتيجية المخصصة للأصل — للتنبيه التلقائي (صعود فقط)."""
+def breakout_signal(timeframe: str = "1h", asset: str = "btc") -> dict | None:
+    """إشارة الاستراتيجية القوية للأصل — للتنبيه التلقائي (عند تحقق شروط الصيدة القوية فقط)."""
     cfg = assets.get(asset)
     df, exchange = fetch_ohlcv(cfg["symbol"], timeframe, limit=250)
     ind = indicators(df)
     strat_score, strat_label, _ = strategy_signal(df, ind, cfg)
-    if strat_score <= 0:
+    if abs(strat_score) < 2.0:
+        return None
+    i = -2 if len(df) >= 2 else -1
+    e20 = float(ind["ema20"].iloc[i])
+    e50 = float(ind["ema50"].iloc[i])
+    v20 = float(ind["vol20"].iloc[i]) if ind["vol20"].iloc[i] == ind["vol20"].iloc[i] else 0.0
+    vol_ratio = float(df["volume"].iloc[i]) / v20 if v20 else 1.0
+    direction = "long" if strat_score > 0 else "short"
+    if direction == "long" and e20 <= e50:
+        return None
+    if direction == "short" and e20 >= e50:
+        return None
+    if cfg.get("volume_mult", 0) > 0 and vol_ratio <= 1.5:
         return None
     return {
         "asset": cfg["key"],
         "symbol": cfg["symbol"],
         "name": cfg["name"],
-        "direction": "long",
+        "direction": direction,
         "strategy": cfg["strategy_name"],
         "label": strat_label,
         "strength": strat_score,
-        "price": float(df["close"].iloc[-2]) if len(df) >= 2 else float(df["close"].iloc[-1]),
+        "price": float(df["close"].iloc[i]),
         "timeframe": timeframe,
         "exchange": exchange,
     }
@@ -635,16 +647,16 @@ def decision(asset: str = "btc") -> dict:
     reasons.insert(0, f"نظام السوق: {reg.get('name', '—')} — {reg.get('note', '')}")
 
     # Additional filters for "إشارة حقيقية"
-    # 1) تقاطع EMA20/EMA50 (إشارة صعودية)
-    ma_crossover = r.ema20 > r.ema50
-    # 2) حجم مرتفع (أكثر من 1.5× المتوسط)
-    high_vol = r.vol_ratio > 1.5
-    # 3) مرحلة السوق وفق دورة الانقسام (Bull فقط)
-    import datetime
-    bull_phase = halving_utils.halving_phase(datetime.datetime.utcnow()) == "bull"
+    # 1) تقاطع EMA20/EMA50 (إشارة متوافقة مع الاتجاه)
+    ma_aligned = (r.ema20 > r.ema50) if strat >= 0 else (r.ema20 < r.ema50)
+    # 2) حجم مرتفع (أكثر من 1.5× المتوسط للبيتكوين؛ الذهب معفى لأن volume_mult=0)
+    high_vol = (r.vol_ratio > 1.5) if cfg.get("volume_mult", 0) > 0 else True
+    # 3) مرحلة السوق وفق دورة الانقسام (ليس عكس الاتجاه)
+    phase = halving_utils.halving_phase()
+    phase_ok = (phase != "bear") if strat >= 0 else (phase != "bull")
 
-    # الإشارة تُعتبر نشطة فقط إذا تحققت جميع الشروط مع قوة الاستراتيجية الأساسية
-    active_signal = ma_crossover and high_vol and bull_phase and abs(strat) >= 2.0
+    # الإشارة تُعتبر نشطة فقط إذا تحققت جميع الشروط مع قوة الاستراتيجية الأساسية (≥ 2.0)
+    active_signal = ma_aligned and high_vol and phase_ok and abs(strat) >= 2.0
 
     return {
         "asset": asset,
