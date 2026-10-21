@@ -192,3 +192,31 @@ def live_ticker(symbol: str) -> dict:
         "ts": time.time(),
         "exchange": src,
     }
+
+def tradingview_price(symbol: str) -> dict:
+    """سعر لحظي من TradingView (سعر، تغير %, أعلى/أدنى 24س).
+    يعتمد على نقطة النهاية غير الرسمية https://scanner.tradingview.com/crypto/scan.
+    """
+    import requests
+    base, quote = _pair(symbol)
+    ticker = f"BINANCE:{base}{quote}"  # مثال: BINANCE:BTCUSDT
+    url = "https://scanner.tradingview.com/crypto/scan"
+    payload = {
+        "symbols": {"tickers": [ticker]},
+        "columns": ["close", "change", "high", "low", "exchange"]
+    }
+    resp = requests.post(url, json=payload, timeout=8)
+    resp.raise_for_status()
+    data = resp.json()
+    # البيانات تأتي في data["data"][0]["d"] بترتيب الأعمدة المحددة
+    d = data["data"][0]["d"]
+    price, change_percent, high, low, exchange = d
+    return {
+        "price": price,
+        "change": change_percent,
+        "high": high,
+        "low": low,
+        "ts": time.time(),
+        "exchange": exchange or "tradingview",
+    }
+

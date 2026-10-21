@@ -609,7 +609,7 @@ def decision(asset: str = "btc") -> dict:
 
     cfg = assets.get(asset)
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dec") as ex:
-        f_r = ex.submit(analyze, "4h", asset)
+        f_r = ex.submit(analyze, "1h", asset)
         f_m = ex.submit(ml_view, asset)
         r = f_r.result()
         mv = f_m.result()
@@ -634,6 +634,18 @@ def decision(asset: str = "btc") -> dict:
         reasons.insert(0, f"نموذج {ml['model']}: احتمال صعود {prob:.1%} (AUC {ml['metrics']['auc']})")
     reasons.insert(0, f"نظام السوق: {reg.get('name', '—')} — {reg.get('note', '')}")
 
+    # Additional filters for "إشارة حقيقية"
+    # 1) تقاطع EMA20/EMA50 (إشارة صعودية)
+    ma_crossover = r.ema20 > r.ema50
+    # 2) حجم مرتفع (أكثر من 1.5× المتوسط)
+    high_vol = r.vol_ratio > 1.5
+    # 3) مرحلة السوق وفق دورة الانقسام (Bull فقط)
+    import datetime
+    bull_phase = halving_utils.halving_phase(datetime.datetime.utcnow()) == "bull"
+
+    # الإشارة تُعتبر نشطة فقط إذا تحققت جميع الشروط مع قوة الاستراتيجية الأساسية
+    active_signal = ma_crossover and high_vol and bull_phase and abs(strat) >= 2.0
+
     return {
         "asset": asset,
         "name": cfg["name"],
@@ -647,7 +659,7 @@ def decision(asset: str = "btc") -> dict:
         "stance": stance,
         "stance_ar": _STANCE_AR[stance],
         "confidence": confidence,
-        "active": abs(strat) >= 2.0,
+        "active": active_signal,
         "regime": reg,
         "prob_up": prob,
         "ml_model": ml.get("model"),

@@ -26,6 +26,7 @@ from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeybo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import ai_insights
+import markets
 import alerts
 import analysis
 import assets
@@ -247,7 +248,7 @@ async def cmd_price(m: Message):
     key = _sec(m.chat.id)
     cfg = assets.get(key)
     try:
-        t = await asyncio.to_thread(analysis.live_ticker, cfg["symbol"])
+        t = await asyncio.to_thread(markets.tradingview_price, cfg["symbol"])
         fresh = max(0, int(time.time() - t["ts"]))
         txt = (
             f"{cfg['emoji']} <b>{cfg['name']} — سعر لحظي</b>\n\n"
@@ -417,7 +418,12 @@ async def cmd_plan(m: Message):
     else:
         lines.append("💡 اضبط محفظتك بـ /setup لحساب الكمية.")
     lines += ["", "⚠️ <i>ليست نصيحة مالية.</i>"]
-    await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
+    try:
+        await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
+    except Exception as e:
+        logging.exception("فشل إرسال خطة الصفقة")
+        # لا نرسل بديل لتجنب فشل آخر
+        return
 
 
 # ── تنبيهات السعر ──────────────────────────────────────────────
@@ -479,7 +485,12 @@ async def cmd_alerts(m: Message):
         arrow = "📈 فوق" if a["direction"] == "up" else "📉 تحت"
         lines.append(f"{i}. {nm}: <code>${a['price']:,.2f}</code> — {arrow}")
     lines.append("\nللحذف: /delalerts")
-    await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
+    try:
+        await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
+    except Exception as e:
+        logging.exception("فشل إرسال خطة الصفقة")
+        # لا نرسل بديل لتجنب فشل آخر
+        return
 
 
 @router.message(Command("delalerts"))
