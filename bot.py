@@ -191,23 +191,10 @@ async def cmd_recommend(m: Message):
     except Exception as e:  # noqa: BLE001
         await m.answer(f"❌ تعذّر القرار: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
-    prob = f"{d['prob_up']:.1%}" if d["prob_up"] is not None else "—"
-    auc = d["ml_metrics"]["auc"] if d["ml_metrics"] else "—"
-    active = "نشطة الآن ✅" if d["active"] else "لا إشارة حالياً ⏸"
-    reg = d["regime"]
-    await m.answer(
-        f"{cfg['emoji']} <b>{d['name']} — {d['stance_ar']}</b>\n\n"
-        f"💰 السعر: <b>${d['price']:,.2f}</b>\n"
-        f"🎯 الاستراتيجية: {d['strategy']}\n"
-        f"📌 الحالة: <b>{d['strategy_label']}</b> ({d['strategy_score']:+.1f}) — {active}\n"
-        f"🌊 النظام: <b>{reg.get('name')}</b> (كفاءة {reg.get('efficiency')})\n"
-        f"🤖 النموذج: احتمال صعود <b>{prob}</b> (AUC {auc})\n"
-        f"🎚 الثقة: <b>{d['confidence']}%</b>\n\n"
-        f"<b>الأسباب:</b>\n"
-        + "\n".join(f"  • {r}" for r in d["reasons"][:4])
-        + "\n\n⚠️ <i>ليست نصيحة مالية.</i>",
-        reply_markup=kb(m.chat.id),
-    )
+    if not d["active"]:
+        # لا إشارة قوية الآن → نتجنب إزعاج المستخدم برسالة تفصيلية
+        await m.answer("⚪ لا إشارة صيد حقيقية حالياً ⏸", reply_markup=kb(m.chat.id))
+        return
 
 
 @router.message(Command("ml"))

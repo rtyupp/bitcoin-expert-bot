@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import assets
+import datetime
+import halving_utils
 
 EXCHANGES = ("binance", "bybit", "okx")
 MAX_SCORE = 9.5
@@ -90,15 +92,22 @@ def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
         v20 = float(ind["vol20"].iloc[i]) if ind["vol20"].iloc[i] == ind["vol20"].iloc[i] else 0.0
         vol_ok = bool(v20 and v.iloc[i] > cfg["volume_mult"] * v20)
         vol_txt = f"حجم {v.iloc[i] / v20:.1f}×" if v20 else "حجم —"
-        if c.iloc[i] > up and vol_ok:
-            return 3.5, "كسر صاعد مؤكد بالحجم", [f"اختراق الحد العلوي لبولينجر ({up:,.0f}) مع {vol_txt}"]
-        if c.iloc[i] < lo and vol_ok:
-            return -3.5, "كسر هابط مؤكد بالحجم", [f"اختراق الحد السفلي لبولينجر ({lo:,.0f}) مع {vol_txt}"]
+        # Determine market regime based on Bitcoin halving cycle
+        ts = df['ts'].iloc[i] if 'ts' in df.columns else datetime.datetime.utcnow()
+        phase = halving_utils.halving_phase(ts)
+        # Long breakout allowed in bull or side phases
+        if c.iloc[i] > up and vol_ok and phase != "bear":
+            return 3.5, "كسر صاعد مؤكد بالحجم (المرحلة: {} )".format(phase), [f"اختراق الحد العلوي لبولينجر ({up:,.0f}) مع {vol_txt}"]
+        # Short breakout allowed in bear or side phases
+        if c.iloc[i] < lo and vol_ok and phase != "bull":
+            return -3.5, "كسر هابط مؤكد بالحجم (المرحلة: {} )".format(phase), [f"اختراق الحد السفلي لبولينجر ({lo:,.0f}) مع {vol_txt}"]
+        # Near breakout signals keep original behavior but include phase note
         if c.iloc[i] > up * 0.995:
-            return 1.0, "على وشك اختراق صاعد", ["السعر ملاصق للحد العلوي — ينقصه تأكيد الحجم"]
+            return 1.0, f"على وشك اختراق صاعد (المرحلة: {phase})", ["السعر ملاصق للحد العلوي — ينقصه تأكيد الحجم"]
         if c.iloc[i] < lo * 1.005:
-            return -1.0, "على وشك اختراق هابط", ["السعر ملاصق للحد السفلي — ينقصه تأكيد الحجم"]
+            return -1.0, f"على وشك اختراق هابط (المرحلة: {phase})", ["السعر ملاصق للحد السفلي — ينقصه تأكيد الحجم"]
         return 0.0, "لا اختراق — انتظار", ["السعر داخل نطاق بولينجر"]
+
 
     if kind == "macd_ema200":
         m, s = ind["macd"].macd(), ind["macd"].macd_signal()
@@ -638,7 +647,7 @@ def decision(asset: str = "btc") -> dict:
         "stance": stance,
         "stance_ar": _STANCE_AR[stance],
         "confidence": confidence,
-        "active": abs(strat) >= 1.0,
+        "active": abs(strat) >= 2.0,
         "regime": reg,
         "prob_up": prob,
         "ml_model": ml.get("model"),
