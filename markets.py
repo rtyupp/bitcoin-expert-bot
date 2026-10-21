@@ -32,10 +32,13 @@ _OKX_TF = {
 }
 
 
-def _order() -> tuple[str, ...]:
-    if _GOOD:
-        return (_GOOD,) + tuple(s for s in SOURCES if s != _GOOD)
-    return SOURCES
+def _order(symbol: str) -> tuple[str, ...]:
+    base, _ = _pair(symbol)
+    # bybit لا يسرد PAXG — وفّر محاولة فاشلة مؤكدة على الذهب
+    pref = ("binance", "okx", "bybit") if base == "PAXG" else SOURCES
+    if _GOOD and _GOOD in pref:
+        return (_GOOD,) + tuple(s for s in pref if s != _GOOD)
+    return pref
 
 
 def _mark(src: str) -> None:
@@ -144,7 +147,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 250):
     """جلب الشموع — يبدأ من المصدر الناجح سابقاً. يرجّع (DataFrame, المصدر)."""
     base, quote = _pair(symbol)
     errors = []
-    for src in _order():
+    for src in _order(symbol):
         try:
             rows = _KLINES[src](base, quote, timeframe, limit)
             if not rows:
@@ -162,7 +165,7 @@ def tick(symbol: str) -> tuple[float, float, float, float, str]:
     """(السعر، تغير 24س %، أعلى 24س، أدنى 24س، المصدر)."""
     base, quote = _pair(symbol)
     errors = []
-    for src in _order():
+    for src in _order(symbol):
         try:
             price, chg, high, low = _TICKS[src](base, quote)
             _mark(src)

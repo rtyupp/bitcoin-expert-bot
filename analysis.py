@@ -83,7 +83,7 @@ def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
     """
     c, v = df["close"], df["volume"]
     kind = cfg["strategy"]
-    i = -1
+    i = -2 if len(c) >= 2 else -1  # آخر شمعة مغلقة — الحية ما زالت تتشكل
 
     if kind == "bb_vol":
         up, lo = float(ind["bb_up"].iloc[i]), float(ind["bb_lo"].iloc[i])
@@ -515,10 +515,14 @@ def breakout_signal(timeframe: str = "4h", asset: str = "btc") -> dict | None:
         "strategy": cfg["strategy_name"],
         "label": strat_label,
         "strength": strat_score,
-        "price": float(df["close"].iloc[-1]),
+        "price": float(df["close"].iloc[-2]) if len(df) >= 2 else float(df["close"].iloc[-1]),
         "timeframe": timeframe,
         "exchange": exchange,
     }
+
+
+def _rr_label(x: float) -> str:
+    return f"{x:.1f}".rstrip("0").rstrip(".")
 
 
 def risk_plan(
@@ -534,9 +538,9 @@ def risk_plan(
     stop_dist = 2.0 * atr
     stop = entry - sign * stop_dist
     targets = {
-        f"TP1 (1:{rr / 2:.0f})": entry + sign * (rr / 2) * stop_dist,
-        f"TP2 (1:{rr:.0f})": entry + sign * rr * stop_dist,
-        f"TP3 (1:{rr * 1.5:.0f})": entry + sign * rr * 1.5 * stop_dist,
+        f"TP1 (1:{_rr_label(rr / 2)})": entry + sign * (rr / 2) * stop_dist,
+        f"TP2 (1:{_rr_label(rr)})": entry + sign * rr * stop_dist,
+        f"TP3 (1:{_rr_label(rr * 1.5)})": entry + sign * rr * 1.5 * stop_dist,
     }
     plan = {
         "entry": entry,

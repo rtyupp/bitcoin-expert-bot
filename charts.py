@@ -47,6 +47,7 @@ def signal_series(df, ind, cfg) -> np.ndarray:
         out = np.where((out == 0) & (m < s) & (~above), -0.5, out)
 
     out[:20] = 0
+    out[-1] = 0  # الشمعة الحية لم تُغلق — لا تُعتبر إشارة
     return out
 
 

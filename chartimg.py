@@ -197,7 +197,7 @@ def render(df, a: dict, symbol: str, strategy: str = "", live_price: float | Non
         _label(d, W - PR - 6, y - 19, f"NOW {live_price:,.2f}", WHITE, f_s, right=True)
 
     # الحجم
-    vmax = max(v) if v else 1
+    vmax = max(v) if v and max(v) > 0 else 1
     for i in range(n):
         col = UP if c[i] >= o[i] else DOWN
         hh = (v[i] / vmax) * (vol_bot - vol_top)

@@ -26,11 +26,10 @@ RISK_PERCENT = float(os.environ.get("RISK_PERCENT", "1.0"))  # نسبة المخ
 DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 
-ADMIN_CHAT_ID = (
-    int(DAILY_CHAT_ID)
-    if DAILY_CHAT_ID.strip().isdigit() and int(DAILY_CHAT_ID) > 0
-    else None
-)
+try:
+    ADMIN_CHAT_ID = int(DAILY_CHAT_ID.strip()) if DAILY_CHAT_ID.strip() else None
+except ValueError:
+    ADMIN_CHAT_ID = None
 
 # تنبيه الصيدة (المراقبة التلقائية للإشارات القوية)
 SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "4.0"))  # |score| ≥ هذه القيمة = صيدة

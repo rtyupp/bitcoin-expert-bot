@@ -75,7 +75,7 @@ async def market_overview() -> dict:
 
     return {
         "price": coin["current_price"],
-        "change_24h": coin["price_change_percentage_24h"],
+        "change_24h": coin.get("price_change_percentage_24h") or 0.0,
         "change_7d": coin.get("price_change_percentage_7d_in_currency")
         or coin.get("price_change_percentage_7d"),
         "high_24h": coin["high_24h"],

@@ -160,10 +160,12 @@ def walk_forward(df: pd.DataFrame, horizon: int = HORIZON, splits: int = 4) -> d
 
     best = max(results, key=lambda k: results[k]["auc"])
     # تدريب كل النماذج على كل البيانات ثم مزج مرجّح بـ AUC (أكثر ثباتاً من اختيار نموذج واحد)
+    # الاستنتاج على أحدث صف ميزات مكتمل من df نفسها (X مقصوص بعمق الأفق = قديم)
+    Xnow = build_features(df).dropna().iloc[[-1]]
     probs = {}
     for name, m in models.items():
         m.fit(X, y)
-        probs[name] = float(m.predict_proba(X.iloc[[-1]])[:, 1][0])
+        probs[name] = float(m.predict_proba(Xnow)[:, 1][0]) if len(Xnow) else 0.5
     weights = {k: max(results[k]["auc"] - 0.5, 0.01) for k in probs if k in results}
     tw = sum(weights.values())
     prob = sum(probs[k] * weights[k] for k in weights) / tw if tw else 0.5

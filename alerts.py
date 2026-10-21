@@ -54,7 +54,8 @@ def _alert_text_signal(sig: dict, plan: dict | None = None) -> str:
         f"📈 الفريم: {sig['timeframe']} | قوة الإشارة: <code>{sig['strength']:+.1f}</code>",
         f"🏦 المنصة: <code>{sig['exchange']}</code>",
         "",
-        "📊 الأهداف مرسومة على الشارت 👆 — ويصلك تنبيه فور وصول الهدف",
+        ("📊 الأهداف مرسومة على الشارت 👆 — ويصلك تنبيه فور وصول الهدف"
+         if plan and plan.get("tp1") else "📊 الشارت مبني على البيانات الحية"),
         "للتفاصيل: اضغط 🕯️ الشارت أو 🛡 خطة الصفقة",
         "⚠️ <i>ليست نصيحة مالية.</i>",
     ]
@@ -72,21 +73,28 @@ def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
 
     import analysis as _analysis
 
-    atr = float(_analysis.indicators(df)["atr"].iloc[-1])
-    entry = float(df["close"].iloc[-1])
+    n = len(df)
+    si = n - 2 if n >= 2 else 0  # شمعة الإشارة = آخر شمعة مغلقة
+    atr = float(_analysis.indicators(df)["atr"].iloc[si])
+    entry = float(df["close"].iloc[si])
     d = 1 if sig.get("direction", "long") == "long" else -1
     sd = atr * cfg["stop_mult"]
-    n = len(df)
     plan = {
         **plan,
         "direction": "buy" if d == 1 else "sell",
-        "first_entry": {"idx": n - 1, "price": entry, "ts": df["ts"].iloc[-1]},
+        "first_entry": {"idx": si, "price": entry, "ts": df["ts"].iloc[si]},
         "second_entry": None,
         "stop_loss": entry - d * sd,
         "tp1": entry + d * cfg["rr"] * sd,
         "strength": sig["strength"],
     }
-    png = charts.plot_chart(df, plan, cfg["symbol"], live_price=sig["price"])
+    try:
+        import markets as _markets
+
+        live = _markets.ticker(cfg["symbol"])[0]
+    except Exception:  # noqa: BLE001
+        live = entry
+    png = charts.plot_chart(df, plan, cfg["symbol"], live_price=live)
     return plan, png
 
 
@@ -110,7 +118,6 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
         if now - _read_last(key) < config.SIGNAL_COOLDOWN_MIN * 60:
             out[key] = {"sent": False, "reason": "cooldown"}
             continue
-        _write_last(key, now)
         # الشارت + الخطة (الدخول/الوقف/الهدف مرسومة على الشارت)
         plan: dict | None = None
         png: bytes | None = None
@@ -131,6 +138,7 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
                 )
             else:
                 await bot.send_message(target, text, parse_mode="HTML")
+            _write_last(key, now)  # بعد نجاح الإرسال فقط — الفشل لا يحرق التهدئة
             # سجّل الأهداف للمتابعة حتى تتحقق
             _register_watch(key, sig, plan, target)
             out[key] = {"sent": True, "label": sig["label"], "chart": bool(png)}
@@ -180,10 +188,16 @@ def _load_alerts() -> None:
         _price_alerts = {}
 
 
+def _atomic_write(path: str, data: str) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
 def _save_alerts() -> None:
     try:
-        with open(PRICE_ALERTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(_price_alerts, f, ensure_ascii=False)
+        _atomic_write(PRICE_ALERTS_FILE, json.dumps(_price_alerts, ensure_ascii=False))
     except Exception:  # noqa: BLE001
         logging.exception("تعذّر حفظ تنبيهات السعر")
 
@@ -269,8 +283,7 @@ def _load_watch() -> None:
 
 def _save_watch() -> None:
     try:
-        with open(WATCH_FILE, "w", encoding="utf-8") as f:
-            json.dump(_watch, f, ensure_ascii=False)
+        _atomic_write(WATCH_FILE, json.dumps(_watch, ensure_ascii=False))
     except Exception:  # noqa: BLE001
         logging.exception("تعذّر حفظ متابعة الأهداف")
 
@@ -300,16 +313,34 @@ def _register_watch(asset_key: str, sig: dict, plan: dict | None, chat_id: int) 
     _save_watch()
 
 
-async def _hit_chart(asset_key: str, price: float) -> bytes | None:
-    """شارت لحظة تحقق الهدف — خط السعر الآن يظهر على مستوى الهدف."""
+def _hit_chart_sync(asset_key: str, price: float, watch: dict) -> bytes | None:
+    """شارت لحظة تحقق الهدف — بمستويات الصيدة المراقَبة نفسها (لا إشارة معاد حسابها)."""
     try:
         import charts
 
         cfg = assets.get(asset_key)
         df = charts.fetch_4h(cfg["symbol"], days=20)
-        plan = charts.analyze_chart(df, asset_key)
+        n = len(df)
+        d = 1 if watch.get("direction", "long") == "long" else -1
+        plan = {
+            "asset": asset_key,
+            "asset_name": cfg["name"],
+            "strategy": cfg["strategy_name"],
+            "strategy_en": cfg["strategy_en"],
+            "rr": cfg["rr"],
+            "current_price": float(df["close"].iloc[-1]),
+            "current_ts": df["ts"].iloc[-1],
+            "first_entry": {"idx": n - 1, "price": watch["entry"], "ts": df["ts"].iloc[-1]},
+            "second_entry": None,
+            "stop_loss": watch.get("stop"),
+            "tp1": watch["tp1"],
+            "direction": "buy" if d == 1 else "sell",
+            "signal_age_hours": 0,
+            "strength": 0.0,
+        }
         return charts.plot_chart(df, plan, cfg["symbol"], live_price=price)
     except Exception:  # noqa: BLE001
+        logging.exception("تعذّر بناء شارت تحقق الهدف لـ %s", asset_key)
         return None
 
 
@@ -348,7 +379,7 @@ async def check_signal_targets(bot) -> int:
                 f"⚠️ اخرج من الصيدة واحترم إدارة المخاطر."
             )
         text = f"{head}\n\n{body}\n\n⚠️ <i>ليست نصيحة مالية.</i>"
-        png = await _hit_chart(key, price)
+        png = await asyncio.to_thread(_hit_chart_sync, key, price, w)
         delivered = False
         for chat_id in w.get("chat_ids", []):
             try:

@@ -5,10 +5,12 @@ import asyncio
 
 
 def main():
-    price, change, exchange = ticker()
+    import assets
+
+    price, change, exchange = ticker(assets.get("btc")["symbol"])
     print(f"السعر: ${price:,.0f} ({change:+.2f}% 24س) — {exchange}")
 
-    report = analyze()
+    report = analyze("4h", "btc")
     print(report.summary)
 
     async def feeds():

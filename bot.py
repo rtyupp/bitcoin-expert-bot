@@ -13,6 +13,7 @@ import asyncio
 import logging
 import secrets
 import time
+from html import escape as _h
 from concurrent.futures import ThreadPoolExecutor
 
 from aiohttp import web
@@ -174,7 +175,7 @@ async def cmd_analysis(m: Message):
     try:
         txt = await asyncio.to_thread(analysis.multi_summary, key)
     except Exception as e:  # noqa: BLE001
-        txt = f"❌ تعذّر التحليل: {e}"
+        txt = f"❌ تعذّر التحليل: {_h(str(e))}"
     await m.answer(txt, reply_markup=kb(m.chat.id))
 
 
@@ -188,7 +189,7 @@ async def cmd_recommend(m: Message):
     try:
         d = await asyncio.to_thread(analysis.decision, key)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر القرار: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر القرار: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
     prob = f"{d['prob_up']:.1%}" if d["prob_up"] is not None else "—"
     auc = d["ml_metrics"]["auc"] if d["ml_metrics"] else "—"
@@ -218,7 +219,7 @@ async def cmd_ml(m: Message):
     try:
         mv = await asyncio.to_thread(analysis.ml_view, key)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر تحميل النموذج: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر تحميل النموذج: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
     ml, reg = mv.get("ml", {}), mv.get("regime", {})
     if not ml.get("ok"):
@@ -275,7 +276,7 @@ async def cmd_price(m: Message):
         )
         await m.answer(txt, reply_markup=kb(m.chat.id))
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب السعر: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر جلب السعر: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 @router.message(Command("fibo"))
@@ -295,7 +296,7 @@ async def cmd_fibo(m: Message):
         lines += ["", "⚠️ <i>ليست نصيحة مالية.</i>"]
         await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر حساب المستويات: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر حساب المستويات: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 # ── الشارت ─────────────────────────────────────────────────────
@@ -325,28 +326,39 @@ async def _send_chart(m: Message, key: str) -> None:
                              parse_mode=ParseMode.HTML)
     except Exception as e:  # noqa: BLE001
         logging.exception("فشل بناء الشارت لـ %s", key)
-        await m.answer(f"❌ تعذّر بناء الشارت: {e}", reply_markup=section_kb(key))
+        await m.answer(f"❌ تعذّر بناء الشارت: {_h(str(e))}", reply_markup=section_kb(key))
 
 
 # ── إدارة المخاطر ──────────────────────────────────────────────
 
 @router.message(Command("setup"))
 async def cmd_setup(m: Message):
+    import math
+
+    if config.ADMIN_CHAT_ID and m.chat.id != config.ADMIN_CHAT_ID:
+        await m.answer("⛔ ضبط رأس المال متاح للمالك فقط")
+        return
     parts = m.text.split()
     if len(parts) < 2:
         await _setup_help(m)
         return
-    raw = parts[1].replace(",", "").replace("$", "").replace("k", "000").replace("K", "000")
+    raw = parts[1].replace(",", "").replace("$", "").strip().lower()
+    mult = 1_000.0 if raw.endswith("k") else 1_000_000.0 if raw.endswith("m") else 1.0
+    raw = raw[:-1] if mult > 1 else raw
     try:
-        amount = float(raw)
+        amount = float(raw) * mult
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
     except ValueError:
-        await m.answer("❌ مبلغ غير صحيح. مثال: <code>/setup 10000</code>", reply_markup=kb(m.chat.id))
+        await m.answer("❌ مبلغ غير صحيح. مثال: <code>/setup 10000</code> أو <code>/setup 10k</code>", reply_markup=kb(m.chat.id))
         return
     settings.set_account(amount)
     rp = settings.risk_pct()
     if len(parts) >= 3:
         try:
             rp = float(parts[2])
+            if not math.isfinite(rp) or not 0 < rp <= 100:
+                raise ValueError
             settings.set_risk(rp)
         except ValueError:
             pass
@@ -384,7 +396,7 @@ async def cmd_plan(m: Message):
     try:
         d = await asyncio.to_thread(analysis.decision, key)
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر التحليل: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر التحليل: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
     direction = "long" if d["stance"] != "short" else "short"
     plan = analysis.risk_plan(
@@ -437,16 +449,25 @@ async def cmd_alert(m: Message):
             reply_markup=kb(m.chat.id),
         )
         return
-    raw = parts[1].replace(",", "").replace("$", "").replace("k", "000").replace("K", "000")
+    import math
+
+    raw = parts[1].replace(",", "").replace("$", "").strip().lower()
+    mult = 1_000.0 if raw.endswith("k") else 1_000_000.0 if raw.endswith("m") else 1.0
+    raw = raw[:-1] if mult > 1 else raw
     try:
-        target = float(raw)
+        target = float(raw) * mult
+        if not math.isfinite(target) or target <= 0:
+            raise ValueError
     except ValueError:
-        await m.answer("❌ سعر غير صحيح. مثال: <code>/alert 85000</code>", reply_markup=kb(m.chat.id))
+        await m.answer("❌ سعر غير صحيح. مثال: <code>/alert 85000</code> أو <code>/alert 85k</code>", reply_markup=kb(m.chat.id))
+        return
+    if len(alerts.list_alerts(m.chat.id)) >= 20:
+        await m.answer("⚠️ الحد الأقصى 20 تنبيهاً — احذف القديمة بـ /alerts", reply_markup=kb(m.chat.id))
         return
     try:
         cur, _, _ = await asyncio.to_thread(analysis.ticker, cfg["symbol"])
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب السعر: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر جلب السعر: {_h(str(e))}", reply_markup=kb(m.chat.id))
         return
     direction = "up" if target > cur else "down"
     alerts.set_alert(m.chat.id, target, direction, key)
@@ -494,7 +515,7 @@ async def cmd_fng(m: Message):
             reply_markup=kb(m.chat.id),
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب المؤشر: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر جلب المؤشر: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 @router.message(Command("onchain"))
@@ -511,7 +532,7 @@ async def cmd_onchain(m: Message):
             reply_markup=kb(m.chat.id),
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب بيانات الشبكة: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر جلب بيانات الشبكة: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 @router.message(Command("market"))
@@ -529,7 +550,7 @@ async def cmd_market(m: Message):
             reply_markup=kb(m.chat.id),
         )
     except Exception as e:  # noqa: BLE001
-        await m.answer(f"❌ تعذّر جلب بيانات السوق: {e}", reply_markup=kb(m.chat.id))
+        await m.answer(f"❌ تعذّر جلب بيانات السوق: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 @router.message(Command("ai"))
@@ -551,9 +572,9 @@ async def cmd_ai(m: Message):
             pass
         ctx = ai_insights.build_context(report.summary, fng, market)
         text = await ai_insights.ai_analysis(ctx)
-        await wait.edit_text(f"🤖 <b>تحليل {cfg['name']}</b>\n\n{text or 'لم يصل رد.'}")
+        await wait.edit_text(f"🤖 <b>تحليل {cfg['name']}</b>\n\n{_h(text) if text else 'لم يصل رد.'}")
     except Exception as e:  # noqa: BLE001
-        await wait.edit_text(f"❌ فشل التحليل: {e}")
+        await wait.edit_text(f"❌ فشل التحليل: {_h(str(e))}")
 
 
 # ── مساعدات وتشخيص ────────────────────────────────────────────
@@ -642,7 +663,9 @@ async def cron(request: web.Request) -> web.Response:
     if bot is None:
         return web.Response(status=503, text="BOT_TOKEN missing")
     secret = request.headers.get("X-Cron-Secret", "")
-    if config.CRON_SECRET and not secrets.compare_digest(secret, config.CRON_SECRET):
+    if not config.CRON_SECRET or not secrets.compare_digest(
+        secret.encode("utf-8"), config.CRON_SECRET.encode("utf-8")
+    ):
         return web.Response(status=403, text="forbidden")
     if not config.ADMIN_CHAT_ID:
         return web.Response(text="DAILY_CHAT_ID غير مضبوط")
@@ -670,7 +693,9 @@ async def signal_check(request: web.Request) -> web.Response:
     if bot is None:
         return web.Response(status=503, text="BOT_TOKEN missing")
     secret = request.headers.get("X-Cron-Secret", "")
-    if config.CRON_SECRET and not secrets.compare_digest(secret, config.CRON_SECRET):
+    if not config.CRON_SECRET or not secrets.compare_digest(
+        secret.encode("utf-8"), config.CRON_SECRET.encode("utf-8")
+    ):
         return web.Response(status=403, text="forbidden")
     return web.json_response(await alerts.check_and_alert(bot))
 
@@ -698,10 +723,14 @@ async def main():
             await asyncio.Event().wait()
         raise RuntimeError("BOT_TOKEN غير مضبوط")
 
-    asyncio.create_task(alerts.watcher_loop(bot))
-    asyncio.create_task(_memory_keeper())
+    _bg_tasks = [  # مراجع قوية — بدونها قد تُجمع المهام كقمامة
+        asyncio.create_task(alerts.watcher_loop(bot)),
+        asyncio.create_task(_memory_keeper()),
+    ]
 
     if config.WEBHOOK_MODE:
+        if not config.WEBHOOK_SECRET:
+            raise RuntimeError("WEBHOOK_SECRET مطلوب في وضع الويبهوك (حماية من التحديثات المزورة)")
         app = web.Application()
         handler = SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=config.WEBHOOK_SECRET)
         handler.register(app, path=config.WEBHOOK_PATH)

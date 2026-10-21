@@ -1,5 +1,6 @@
 """إعدادات المستخدم المحفوظة (حجم المحفظة + نسبة المخاطرة)."""
 import json
+import logging
 import os
 
 import config
@@ -16,11 +17,13 @@ def load() -> dict:
 
 
 def save(d: dict) -> None:
+    tmp = FILE + ".tmp"
     try:
-        with open(FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, FILE)
     except Exception:  # noqa: BLE001
-        pass
+        logging.exception("تعذّر حفظ الإعدادات")
 
 
 def account_size() -> float:

@@ -41,9 +41,9 @@ jobs:
           DAILY_CHAT_ID: ${{ secrets.DAILY_CHAT_ID }}
           MALLOC_ARENA_MAX: "2"
           PYTHONUNBUFFERED: "1"
+          RUN_MINUTES: ${{ github.event.inputs.minutes }}
         run: |
-          MIN="${{ github.event.inputs.minutes }}"
-          MIN="${MIN:-345}"
+          MIN="${RUN_MINUTES:-345}"
           echo "▶ سيعمل البوت لمدة $MIN دقيقة"
           timeout --signal=INT "${MIN}m" python bot.py || true
           echo "■ انتهت الدورة"
@@ -58,5 +58,6 @@ jobs:
             echo "لا تغييرات في الحالة"
           else
             git commit -m "state: حفظ التنبيهات والإعدادات"
+            git pull --rebase -X ours origin main || true
             git push
           fi
