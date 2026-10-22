@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import httpx
+import pandas as pd
 import config
 
 BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
@@ -39,12 +41,18 @@ RESOLUTION_MAP = {
 
 DEFAULT_SIZES = {
     "BTCUSD": 0.01,  # 0.01 BTC
-    "GOLD": 0.1,     # 0.1 oz Gold
+    "GOLD": 0.05,    # 0.05 oz Gold
 }
 
 _CLIENT = httpx.Client(timeout=httpx.Timeout(12.0, connect=5.0))
-_SESSION: dict[str, str | float] = {"cst": "", "xst": "", "ts": 0.0}
-_SESSION_TTL = 480.0  # 8 دقائق
+_AUTH_LOCK = threading.Lock()
+_SESSION: dict[str, str | float] = {"cst": "", "xst": "", "ts": 0.0, "fail_until": 0.0}
+_SESSION_TTL = 540.0  # 9 دقائق
+
+_PRICE_CACHE: dict[str, tuple[float, dict]] = {}
+_PRICE_TTL = 8.0
+_OHLCV_CACHE: dict[tuple[str, str, int], tuple[float, pd.DataFrame]] = {}
+_OHLCV_TTL = 45.0
 
 
 def is_configured() -> bool:
@@ -58,31 +66,49 @@ def _epic(asset_or_symbol: str) -> str:
 def _auth_headers(force: bool = False) -> dict[str, str]:
     if not is_configured():
         raise RuntimeError("بيانات حساب Capital.com غير مضبوطة")
-    now = time.time()
-    if not force and _SESSION["cst"] and (now - float(_SESSION["ts"])) < _SESSION_TTL:
-        return {
-            "CST": str(_SESSION["cst"]),
-            "X-SECURITY-TOKEN": str(_SESSION["xst"]),
-            "Content-Type": "application/json",
-        }
-    r = _CLIENT.post(
-        f"{BASE_URL}/session",
-        headers={"X-CAP-API-KEY": config.CAPITAL_API_KEY, "Content-Type": "application/json"},
-        json={
-            "identifier": config.CAPITAL_EMAIL,
-            "password": config.CAPITAL_API_PASSWORD,
-            "encryptedPassword": False,
-        },
-    )
-    r.raise_for_status()
-    cst = r.headers.get("CST", "")
-    xst = r.headers.get("X-SECURITY-TOKEN", "")
-    if not cst or not xst:
-        raise RuntimeError("فشل الحصول على رموز الجلسة من Capital.com")
-    _SESSION["cst"] = cst
-    _SESSION["xst"] = xst
-    _SESSION["ts"] = now
-    return {"CST": cst, "X-SECURITY-TOKEN": xst, "Content-Type": "application/json"}
+    with _AUTH_LOCK:
+        now = time.time()
+        if not force and _SESSION["cst"] and (now - float(_SESSION["ts"])) < _SESSION_TTL:
+            return {
+                "CST": str(_SESSION["cst"]),
+                "X-SECURITY-TOKEN": str(_SESSION["xst"]),
+                "Content-Type": "application/json",
+            }
+        if now < float(_SESSION.get("fail_until", 0.0)):
+            if _SESSION["cst"]:
+                return {
+                    "CST": str(_SESSION["cst"]),
+                    "X-SECURITY-TOKEN": str(_SESSION["xst"]),
+                    "Content-Type": "application/json",
+                }
+            raise RuntimeError("Capital.com rate-limit cooldown")
+
+        r = _CLIENT.post(
+            f"{BASE_URL}/session",
+            headers={"X-CAP-API-KEY": config.CAPITAL_API_KEY, "Content-Type": "application/json"},
+            json={
+                "identifier": config.CAPITAL_EMAIL,
+                "password": config.CAPITAL_API_PASSWORD,
+                "encryptedPassword": False,
+            },
+        )
+        if r.status_code == 429:
+            _SESSION["fail_until"] = now + 30.0
+            if _SESSION["cst"]:
+                return {
+                    "CST": str(_SESSION["cst"]),
+                    "X-SECURITY-TOKEN": str(_SESSION["xst"]),
+                    "Content-Type": "application/json",
+                }
+        r.raise_for_status()
+        cst = r.headers.get("CST", "")
+        xst = r.headers.get("X-SECURITY-TOKEN", "")
+        if not cst or not xst:
+            raise RuntimeError("فشل الحصول على رموز الجلسة من Capital.com")
+        _SESSION["cst"] = cst
+        _SESSION["xst"] = xst
+        _SESSION["ts"] = now
+        return {"CST": cst, "X-SECURITY-TOKEN": xst, "Content-Type": "application/json"}
 
 
 def _request(method: str, path: str, **kwargs) -> httpx.Response:
@@ -133,9 +159,38 @@ def account_summary() -> dict:
     }
 
 
+def has_open_position(asset_or_symbol: str) -> dict | None:
+    """يتحقق هل توجد صفقة مفتوحة فعلياً على هذا الأصل في Capital.com (لمنع تكرار الصفقات)."""
+    epic = _epic(asset_or_symbol)
+    try:
+        pos_data = _request("GET", "/positions").json()
+        for item in pos_data.get("positions") or []:
+            p = item.get("position") or {}
+            m = item.get("market") or {}
+            if m.get("epic") == epic:
+                return {
+                    "dealId": p.get("dealId"),
+                    "epic": epic,
+                    "direction": p.get("direction"),
+                    "size": p.get("size"),
+                    "level": p.get("level"),
+                    "stopLevel": p.get("stopLevel"),
+                    "profitLevel": p.get("profitLevel"),
+                    "upl": p.get("upl", 0.0),
+                }
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def live_price(symbol_or_asset: str) -> dict:
-    """سعر لحظي من Capital.com."""
+    """سعر لحظي من Capital.com مع كاش قصير (8 ثوانٍ) لمنع الحظر."""
     epic = _epic(symbol_or_asset)
+    now = time.time()
+    cached = _PRICE_CACHE.get(epic)
+    if cached and (now - cached[0]) < _PRICE_TTL:
+        return cached[1]
+
     data = _request("GET", f"/markets/{epic}").json()
     snap = data.get("snapshot") or {}
     bid = float(snap.get("bid") or 0.0)
@@ -144,25 +199,31 @@ def live_price(symbol_or_asset: str) -> dict:
     if price <= 0:
         raise RuntimeError(f"Capital.com لم يرجع سعراً لـ {epic}")
     pct_chg = snap.get("percentageChange")
-    return {
+    res = {
         "price": price,
         "bid": bid,
         "offer": offer,
         "change": float(pct_chg) if pct_chg is not None else None,
         "high": float(snap.get("high") or 0.0),
         "low": float(snap.get("low") or 0.0),
-        "ts": time.time(),
+        "ts": now,
         "exchange": f"Capital.com ({epic})",
     }
+    _PRICE_CACHE[epic] = (now, res)
+    return res
 
 
 def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
-    """يجلب الشموع التاريخية والحية مباشرة من Capital.com بصيغة DataFrame مطابقة."""
-    import pandas as pd
-
+    """يجلب الشموع التاريخية والحية مباشرة من Capital.com مع كاش 45 ثانية."""
     epic = _epic(symbol_or_asset)
     res = RESOLUTION_MAP.get(timeframe, "HOUR")
     max_bars = min(max(int(limit), 10), 1000)
+    cache_key = (epic, res, max_bars)
+    now = time.time()
+    cached = _OHLCV_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _OHLCV_TTL:
+        return cached[1].copy(), f"Capital.com ({epic})"
+
     data = _request("GET", f"/prices/{epic}", params={"resolution": res, "max": max_bars}).json()
     prices = data.get("prices") or []
     if not prices:
@@ -189,7 +250,8 @@ def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
 
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
     df["ts"] = pd.to_datetime(df["ts"])
-    return df, f"Capital.com ({epic})"
+    _OHLCV_CACHE[cache_key] = (now, df)
+    return df.copy(), f"Capital.com ({epic})"
 
 
 def open_trade(
@@ -198,9 +260,23 @@ def open_trade(
     size: float | None = None,
     stop_level: float | None = None,
     profit_level: float | None = None,
+    allow_multiple: bool = False,
 ) -> dict:
-    """يفتح صفقة BUY أو SELL على الحساب التجريبي في Capital.com."""
+    """يفتح صفقة BUY أو SELL على الحساب التجريبي في Capital.com (يرفض التكرار إذا allow_multiple=False)."""
     epic = _epic(asset_or_symbol)
+    if not allow_multiple:
+        existing = has_open_position(epic)
+        if existing:
+            return {
+                "ok": False,
+                "already_open": True,
+                "epic": epic,
+                "direction": existing["direction"],
+                "size": existing["size"],
+                "level": existing["level"],
+                "dealId": existing["dealId"],
+            }
+
     side = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
     deal_size = float(size) if size and size > 0 else DEFAULT_SIZES.get(epic, 0.01)
 

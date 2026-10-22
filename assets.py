@@ -44,7 +44,7 @@ ASSETS: dict[str, dict] = {
         "strategy_en": "SMC 10-Bar Sweep + BB Trap + EMA20 Flow",
         "strategy_note": "استراتيجية متداولي الذهب المحترفين: قنص سيولة قمم/قيعان 10 شموع + مصيدة بولينجر + كسر ارتداد EMA20 باتجاه EMA200 (وقف رشيق 1.5×ATR وتأمين عند 1R)",
         "rr": 2.0,
-        "stop_mult": 1.5,
+        "stop_mult": 1.8,
         "volume_mult": 1.2,
         "threshold": 3.5,
         "weights": {

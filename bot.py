@@ -599,7 +599,7 @@ async def _exec_demo_order(m: Message, direction: str) -> None:
         tp_lvl = entry_ref + d * cfg["rr"] * sd
 
         res = await asyncio.to_thread(
-            capital_trader.open_trade, key, side, custom_size, stop_lvl, tp_lvl
+            capital_trader.open_trade, key, side, custom_size, stop_lvl, tp_lvl, True
         )
         word = "شراء 🟢" if side == "BUY" else "بيع 🔴"
         await m.answer(

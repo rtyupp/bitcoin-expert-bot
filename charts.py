@@ -60,41 +60,21 @@ def signal_series(df, ind, cfg) -> np.ndarray:
                 out[i] = 1.0
             elif (swept_hi or bb_fake_hi) and c[i] < o[i] and rsi[i] > 50 and (c[i] < e200[i] or rsi[i - 1] > 68):
                 out[i] = -1.0
-    else:  # smc_trend_flow / smc_ema20_reclaim / bb_trap_donchian / macd_ema200
-        sw10_hi = pd.Series(ind.get("don10_hi", ind["don20_hi"])).fillna(pd.Series(up)).values
-        sw10_lo = pd.Series(ind.get("don10_lo", ind["don20_lo"])).fillna(pd.Series(lo)).values
+    else:  # smc_trend_flow / gold on Capital.com
         for i in range(20, n - 1):
-            bull_trend = c[i] > e200[i]
-            bear_trend = c[i] < e200[i]
-            swept_hi_10 = (h[i] > sw10_hi[i] and c[i] < sw10_hi[i] and c[i] < o[i]) or (
-                h[i - 1] > sw10_hi[i - 1] and c[i] < sw10_hi[i] and c[i] < l[i - 1] and c[i] < o[i]
+            rng = max(float(h[i] - l[i]), 1e-9)
+            body_ok = abs(float(c[i] - o[i])) / rng >= 0.25
+            swept_20_lo = (l[i] < sw20_lo[i] and c[i] > sw20_lo[i]) or (
+                l[i - 1] < sw20_lo[i - 1] and c[i] > sw20_lo[i] and c[i] > h[i - 1]
             )
-            swept_lo_10 = (l[i] < sw10_lo[i] and c[i] > sw10_lo[i] and c[i] > o[i]) or (
-                l[i - 1] < sw10_lo[i - 1] and c[i] > sw10_lo[i] and c[i] > h[i - 1] and c[i] > o[i]
+            swept_20_hi = (h[i] > sw20_hi[i] and c[i] < sw20_hi[i]) or (
+                h[i - 1] > sw20_hi[i - 1] and c[i] < sw20_hi[i] and c[i] < l[i - 1]
             )
-            bb_hi_trap = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < o[i]
             bb_lo_trap = c[i - 1] < lo[i - 1] and c[i] > lo[i] and c[i] > o[i]
-            e20_cross_dn = (
-                bear_trend
-                and (h[i - 1] >= e20[i - 1] or h[i - 2] >= e20[i - 2])
-                and c[i] < e20[i]
-                and c[i - 1] >= e20[i - 1]
-                and c[i] < l[i - 1]
-                and c[i] < o[i]
-            )
-            e20_cross_up = (
-                bull_trend
-                and (l[i - 1] <= e20[i - 1] or l[i - 2] <= e20[i - 2])
-                and c[i] > e20[i]
-                and c[i - 1] <= e20[i - 1]
-                and c[i] > h[i - 1]
-                and c[i] > o[i]
-            )
-            if bull_trend and (swept_lo_10 or bb_lo_trap or e20_cross_up) and rsi[i] < 62:
+            bb_hi_trap = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < o[i]
+            if body_ok and (bb_lo_trap or (swept_20_lo and c[i] > o[i])) and (e50[i] >= e200[i] or rsi[i - 1] < 40):
                 out[i] = 1.0
-            elif (bear_trend and (swept_hi_10 or bb_hi_trap or e20_cross_dn) and rsi[i] > 38) or (
-                (swept_hi_10 or bb_hi_trap) and rsi[i - 1] > 64
-            ):
+            elif body_ok and (bb_hi_trap or (swept_20_hi and c[i] < o[i])) and (e50[i] <= e200[i] or rsi[i - 1] > 60):
                 out[i] = -1.0
 
     out[:20] = 0

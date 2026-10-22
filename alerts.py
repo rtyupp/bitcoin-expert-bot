@@ -109,10 +109,21 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
 
     out: dict[str, dict] = {}
     for key in assets.keys():
-        # منع إرسال صيدة جديدة إذا كان هناك صيدة مفتوحة لم تصل للهدف أو الوقف بعد
+        # 1) منع إرسال صيدة جديدة إذا كان هناك صيدة مفتوحة في _watch
         if key in _watch:
             out[key] = {"sent": False, "reason": "active_watch_in_progress"}
             continue
+        # 2) فحص Capital.com مباشرة: إذا كانت هناك صفقة مفتوحة على نفس الأصل، نسجلها في _watch ولا نرسل صيدة جديدة
+        try:
+            import capital_trader
+
+            if capital_trader.is_configured():
+                open_pos = await asyncio.to_thread(capital_trader.has_open_position, key)
+                if open_pos:
+                    out[key] = {"sent": False, "reason": "capital_position_already_open"}
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
         try:
             sig = await asyncio.to_thread(analysis.breakout_signal, "1h", key)
         except Exception as e:  # noqa: BLE001
@@ -122,7 +133,9 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
             out[key] = {"sent": False, "reason": "no_signal"}
             continue
         now = time.time()
-        if now - _read_last(key) < config.SIGNAL_COOLDOWN_MIN * 60:
+        # 3) منع إعادة إرسال نفس شمعة الإشارة أو خلال فترة التهدئة (4 ساعات = 240 دقيقة كحد أدنى بين صيدتين لنفس الأصل)
+        cooldown_sec = max(config.SIGNAL_COOLDOWN_MIN, 240) * 60
+        if now - _read_last(key) < cooldown_sec:
             out[key] = {"sent": False, "reason": "cooldown"}
             continue
         # الشارت + الخطة (الدخول/الوقف/الهدف مرسومة على الشارت)
