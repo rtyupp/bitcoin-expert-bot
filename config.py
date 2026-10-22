@@ -36,3 +36,10 @@ SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "4.0"))  # |score| �
 SIGNAL_MIN_AGREEMENT = int(os.environ.get("SIGNAL_MIN_AGREEMENT", "1"))  # أدنى عدد أطر متوافقة (1=مطفى — backtest أظهر عدم فائدته)
 SIGNAL_COOLDOWN_MIN = int(os.environ.get("SIGNAL_COOLDOWN_MIN", "30"))  # تهدئة بين التنبيهات
 SIGNAL_INTERVAL_SEC = int(os.environ.get("SIGNAL_INTERVAL_SEC", "300"))  # فترة الفحص (وضع polling)
+
+# Capital.com Demo API (للتداول الآلي واليدوي على الحساب التجريبي)
+CAPITAL_EMAIL = os.environ.get("CAPITAL_EMAIL", "")
+CAPITAL_API_KEY = os.environ.get("CAPITAL_API_KEY", "")
+CAPITAL_API_PASSWORD = os.environ.get("CAPITAL_API_PASSWORD", "")
+CAPITAL_AUTO_TRADE = os.environ.get("CAPITAL_AUTO_TRADE", "1") == "1"
+

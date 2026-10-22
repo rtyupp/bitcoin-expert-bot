@@ -26,6 +26,7 @@ from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeybo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import ai_insights
+import capital_trader
 import markets
 import alerts
 import analysis
@@ -63,9 +64,9 @@ def main_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🪙 البيتكوين"), KeyboardButton(text="🥇 الذهب")],
-            [KeyboardButton(text="🌍 السوق"), KeyboardButton(text="😱 الخوف والطمع")],
-            [KeyboardButton(text="⛓️ أون-تشين"), KeyboardButton(text="🤖 الذكاء الاصطناعي")],
-            [KeyboardButton(text="❓ المساعدة")],
+            [KeyboardButton(text="💼 حساب كابيتال"), KeyboardButton(text="🌍 السوق")],
+            [KeyboardButton(text="😱 الخوف والطمع"), KeyboardButton(text="⛓️ أون-تشين")],
+            [KeyboardButton(text="🤖 الذكاء الاصطناعي"), KeyboardButton(text="❓ المساعدة")],
         ],
         resize_keyboard=True,
         input_field_placeholder="اختر السوق أولاً 👇",
@@ -78,9 +79,10 @@ def section_kb(asset: str) -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🧭 القرار"), KeyboardButton(text="📊 التحليل")],
             [KeyboardButton(text="🕯️ الشارت"), KeyboardButton(text="💰 السعر اللحظي")],
-            [KeyboardButton(text="🛡 خطة الصفقة"), KeyboardButton(text="🤖 النموذج")],
+            [KeyboardButton(text="🟢 شراء تجريبي"), KeyboardButton(text="🔴 بيع تجريبي")],
+            [KeyboardButton(text="💼 حساب كابيتال"), KeyboardButton(text="🛡 خطة الصفقة")],
             [KeyboardButton(text="📐 فيبوناتشي"), KeyboardButton(text="⏰ تنبيه سعر")],
-            [KeyboardButton(text="⚙️ الإعدادات"), KeyboardButton(text="🔀 تغيير الأصل")],
+            [KeyboardButton(text="🤖 النموذج"), KeyboardButton(text="🔀 تغيير الأصل")],
         ],
         resize_keyboard=True,
         input_field_placeholder=f"قسم {name} — اختر أمراً",
@@ -514,6 +516,130 @@ async def cmd_alerts(m: Message):
 async def cmd_delalerts(m: Message):
     n = alerts.clear_alerts(m.chat.id)
     await m.answer(f"🗑 حذفت {n} تنبيه.", reply_markup=kb(m.chat.id))
+
+
+# ── حساب Capital.com التجريبي (Demo Trading) ──────────────────────
+
+def _is_owner(chat_id: int) -> bool:
+    return not config.ADMIN_CHAT_ID or chat_id == config.ADMIN_CHAT_ID
+
+
+@router.message(Command("capital"))
+@router.message(F.text == "💼 حساب كابيتال")
+async def cmd_capital(m: Message):
+    if not _is_owner(m.chat.id):
+        await m.answer("⛔ خاص بمالك البوت فقط.")
+        return
+    if not capital_trader.is_configured():
+        await m.answer("⚠️ حساب Capital.com غير مضبوط في الإعدادات.", reply_markup=kb(m.chat.id))
+        return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        s = await asyncio.to_thread(capital_trader.account_summary)
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر الاتصال بـ Capital.com: {_h(str(e))}", reply_markup=kb(m.chat.id))
+        return
+    pl_icon = "🟢" if s["profitLoss"] >= 0 else "🔴"
+    lines = [
+        "💼 <b>حساب Capital.com التجريبي (Demo)</b>",
+        f"🆔 رقم الحساب: <code>{s['accountId']}</code>",
+        "",
+        f"💰 الرصيد الإجمالي: <b>${s['balance']:,.2f}</b>",
+        f"💵 المتاح للتداول: <code>${s['available']:,.2f}</code>",
+        f"{pl_icon} الربح/الخسارة العائمة: <b>${s['profitLoss']:+,.2f}</b>",
+        f"🤖 التداول التلقائي مع الصيدات: <b>{'مفعّل ✅' if config.CAPITAL_AUTO_TRADE else 'متوقف ⏸'}</b>",
+        "",
+    ]
+    pos = s["positions"]
+    if not pos:
+        lines.append("📭 <i>لا توجد صفقات مفتوحة حالياً.</i>")
+    else:
+        lines.append(f"📊 <b>الصفقات المفتوحة ({len(pos)}):</b>")
+        for i, p in enumerate(pos, 1):
+            d_icon = "🟢 شراء" if p["direction"] == "BUY" else "🔴 بيع"
+            upl = p["upl"] or 0.0
+            st_txt = f" | وقف <code>{p['stopLevel']}</code>" if p.get("stopLevel") else ""
+            tp_txt = f" | هدف <code>{p['profitLevel']}</code>" if p.get("profitLevel") else ""
+            lines.append(
+                f"{i}. <b>{p['epic']}</b> ({d_icon} × <code>{p['size']}</code>) @ <code>${p['level']:,.2f}</code>"
+                f"{st_txt}{tp_txt} → <b>${upl:+,.2f}</b>"
+            )
+        lines.append("\nلإغلاق كل الصفقات: /closeall")
+    lines.append("للشراء/البيع المباشر: اضغط 🟢 شراء تجريبي أو 🔴 بيع تجريبي")
+    await m.answer("\n".join(lines), reply_markup=kb(m.chat.id))
+
+
+async def _exec_demo_order(m: Message, direction: str) -> None:
+    if not _is_owner(m.chat.id):
+        await m.answer("⛔ التداول متاح للمالك فقط.")
+        return
+    if not capital_trader.is_configured():
+        await m.answer("⚠️ حساب Capital.com غير مضبوط.", reply_markup=kb(m.chat.id))
+        return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    key = _sec(m.chat.id)
+    cfg = assets.get(key)
+    parts = (m.text or "").split()
+    custom_size = None
+    if len(parts) >= 2 and parts[0].startswith("/"):
+        try:
+            custom_size = float(parts[1])
+        except ValueError:
+            pass
+    try:
+        # نحسب الوقف والهدف حسب ATR فريم الساعة لإرفاقهما مع الصفقة تلقائياً
+        df, _ = await asyncio.to_thread(analysis.fetch_ohlcv, cfg["symbol"], "1h", 60)
+        atr = float(analysis.indicators(df)["atr"].iloc[-2])
+        mkt = await asyncio.to_thread(capital_trader.live_price, key)
+        side = "BUY" if direction == "long" else "SELL"
+        entry_ref = mkt["offer"] if side == "BUY" else mkt["bid"]
+        d = 1 if side == "BUY" else -1
+        sd = atr * cfg["stop_mult"]
+        stop_lvl = entry_ref - d * sd
+        tp_lvl = entry_ref + d * cfg["rr"] * sd
+
+        res = await asyncio.to_thread(
+            capital_trader.open_trade, key, side, custom_size, stop_lvl, tp_lvl
+        )
+        word = "شراء 🟢" if side == "BUY" else "بيع 🔴"
+        await m.answer(
+            f"✅ <b>تم تنفيذ صفقة {word} في Capital.com (Demo)</b>\n\n"
+            f"{cfg['emoji']} الأصل: <b>{cfg['name']} ({res['epic']})</b>\n"
+            f"📦 الحجم: <code>{res['size']}</code>\n"
+            f"📍 سعر التنفيذ: <b>${res['level']:,.2f}</b>\n"
+            f"🛑 وقف الخسارة: <code>${res.get('stopLevel') or stop_lvl:,.2f}</code>\n"
+            f"🎯 هدف الربح: <code>${res.get('profitLevel') or tp_lvl:,.2f}</code>\n"
+            f"🆔 رقم العقد: <code>{res.get('dealId') or res.get('dealReference')}</code>\n\n"
+            f"لعرض المحفظة والصفقات: اضغط 💼 حساب كابيتال",
+            reply_markup=kb(m.chat.id),
+        )
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ فشل تنفيذ الصفقة: {_h(str(e))}", reply_markup=kb(m.chat.id))
+
+
+@router.message(Command("buy"))
+@router.message(F.text == "🟢 شراء تجريبي")
+async def cmd_buy(m: Message):
+    await _exec_demo_order(m, "long")
+
+
+@router.message(Command("sell"))
+@router.message(F.text == "🔴 بيع تجريبي")
+async def cmd_sell(m: Message):
+    await _exec_demo_order(m, "short")
+
+
+@router.message(Command("closeall"))
+async def cmd_closeall(m: Message):
+    if not _is_owner(m.chat.id):
+        await m.answer("⛔ خاص بمالك البوت فقط.")
+        return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        n = await asyncio.to_thread(capital_trader.close_all)
+        await m.answer(f"✅ تم إغلاق <b>{n}</b> صفقة مفتوحة في Capital.com.", reply_markup=kb(m.chat.id))
+    except Exception as e:  # noqa: BLE001
+        await m.answer(f"❌ تعذّر إغلاق الصفقات: {_h(str(e))}", reply_markup=kb(m.chat.id))
 
 
 # ── بيانات السوق ───────────────────────────────────────────────

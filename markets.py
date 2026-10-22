@@ -298,9 +298,15 @@ def xtb_price(symbol: str) -> dict:
 
 
 def best_live_price(symbol: str) -> dict:
-    """يجلب السعر اللحظي بالترتيب: XTB (إن وُجدت بيانات الدخول) → TradingView → المنصات المباشرة."""
+    """يجلب السعر اللحظي بالترتيب: Capital.com (إن وُجد) → XTB → TradingView → المنصات المباشرة."""
     import os
+    import capital_trader
 
+    if capital_trader.is_configured():
+        try:
+            return capital_trader.live_price(symbol)
+        except Exception:  # noqa: BLE001
+            pass
     if os.getenv("XTB_USER_ID") and os.getenv("XTB_PASSWORD"):
         try:
             return xtb_price(symbol)

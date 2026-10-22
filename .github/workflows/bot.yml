@@ -39,6 +39,9 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DAILY_CHAT_ID: ${{ secrets.DAILY_CHAT_ID }}
+          CAPITAL_EMAIL: ${{ secrets.CAPITAL_EMAIL }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_API_PASSWORD: ${{ secrets.CAPITAL_API_PASSWORD }}
           MALLOC_ARENA_MAX: "2"
           PYTHONUNBUFFERED: "1"
           RUN_MINUTES: ${{ github.event.inputs.minutes }}

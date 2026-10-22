@@ -133,6 +133,29 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
         except Exception:  # noqa: BLE001
             logging.exception("تعذّر بناء شارت الإشارة لـ %s", key)
         text = _alert_text_signal(sig, plan)
+        # تنفيذ تلقائي على حساب Capital.com التجريبي إذا كان مفعلاً
+        cap_deal = None
+        if config.CAPITAL_AUTO_TRADE:
+            try:
+                import capital_trader
+
+                if capital_trader.is_configured():
+                    cap_deal = await asyncio.to_thread(
+                        capital_trader.open_trade,
+                        key,
+                        sig["direction"],
+                        None,
+                        (plan or {}).get("stop_loss"),
+                        (plan or {}).get("tp1"),
+                    )
+                    if cap_deal and cap_deal.get("ok"):
+                        text += (
+                            f"\n\n💼 <b>تم فتح الصفقة تلقائياً في Capital.com (Demo):</b>\n"
+                            f"• الرمز: <code>{cap_deal['epic']}</code> ({cap_deal['direction']}) | الحجم: <code>{cap_deal['size']}</code>\n"
+                            f"• تنفيذ الدخول: <code>${cap_deal['level']:,.2f}</code>"
+                        )
+            except Exception as cap_err:  # noqa: BLE001
+                logging.exception("تعذّر فتح الصفقة تلقائياً على Capital.com لـ %s: %s", key, cap_err)
         try:
             if png:
                 from aiogram.types import BufferedInputFile
@@ -147,8 +170,8 @@ async def check_and_alert(bot, target: int | None = None) -> dict:
                 await bot.send_message(target, text, parse_mode="HTML")
             _write_last(key, now)  # بعد نجاح الإرسال فقط — الفشل لا يحرق التهدئة
             # سجّل الأهداف للمتابعة حتى تتحقق
-            _register_watch(key, sig, plan, target)
-            out[key] = {"sent": True, "label": sig["label"], "chart": bool(png)}
+            _register_watch(key, sig, plan, target, cap_deal=cap_deal)
+            out[key] = {"sent": True, "label": sig["label"], "chart": bool(png), "capital": bool(cap_deal)}
         except Exception as e:  # noqa: BLE001
             out[key] = {"sent": False, "reason": f"send_failed: {e}"}
     return {"assets": out}
@@ -295,8 +318,10 @@ def _save_watch() -> None:
         logging.exception("تعذّر حفظ متابعة الأهداف")
 
 
-def _register_watch(asset_key: str, sig: dict, plan: dict | None, chat_id: int) -> None:
-    """يسجّل أهداف الصيدة الحالية لمتابعتها حتى تتحقق (مع هدف التأمين 1R والهدف الكامل)."""
+def _register_watch(
+    asset_key: str, sig: dict, plan: dict | None, chat_id: int, cap_deal: dict | None = None
+) -> None:
+    """يسجّل أهداف الصيدة الحالية لمتابعتها حتى تتحقق (مع هدف التأمين 1R والهدف الكامل ورقم صفقة Capital)."""
     fe = (plan or {}).get("first_entry") or {}
     entry = float(fe.get("price") or sig["price"])
     tp1 = (plan or {}).get("tp1")
@@ -316,6 +341,7 @@ def _register_watch(asset_key: str, sig: dict, plan: dict | None, chat_id: int) 
         "be_locked": False,
         "tp1": float(tp1),
         "stop": float(stop) if stop else None,
+        "capital_deal_id": (cap_deal or {}).get("dealId"),
         "opened_ts": time.time(),
         "chat_ids": [int(chat_id)],
     }
@@ -375,12 +401,24 @@ async def check_signal_targets(bot) -> int:
                 w["be_locked"] = True
                 w["stop"] = w["entry"]
                 _save_watch()
+                cap_moved = 0
+                try:
+                    import capital_trader
+
+                    if capital_trader.is_configured():
+                        cap_moved = await asyncio.to_thread(
+                            capital_trader.move_stop_to_breakeven, key, w["entry"]
+                        )
+                except Exception:  # noqa: BLE001
+                    logging.exception("تعذّر نقل الوقف في Capital.com لـ %s", key)
+                cap_note = "\n💼 <b>Capital.com:</b> تم تعديل الوقف إلى نقطة الدخول في حسابك التجريبي ✅" if cap_moved else ""
                 be_text = (
                     f"🔒 <b>تأمين الصيدة (1:1) — {name}!</b>\n\n"
                     f"📍 الدخول: <code>${w['entry']:,.2f}</code>\n"
                     f"✅ وصل الهدف الأول: <code>${tp_be:,.2f}</code>\n"
                     f"💰 السعر الآن: <b>${price:,.2f}</b>\n\n"
                     f"🛡 <b>تم نقل الوقف لنقطة الدخول (${w['entry']:,.2f}) تلقائياً — الصفقة الآن بدون مخاطرة والهدف القادم ${w['tp1']:,.2f} 🎯</b>"
+                    f"{cap_note}"
                 )
                 for chat_id in w.get("chat_ids", []):
                     try:
