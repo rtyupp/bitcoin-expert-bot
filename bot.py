@@ -270,8 +270,11 @@ async def cmd_price(m: Message):
         fresh = max(0, int(time.time() - t["ts"]))
         txt = (
             f"{cfg['emoji']} <b>{cfg['name']} — سعر لحظي</b>\n\n"
-            f"$<b>{t['price']:,.2f}</b>\n"
+            f"💰 السعر (شارت/بيع Bid): <b>${t['price']:,.2f}</b>\n"
         )
+        if t.get("offer") and t.get("bid"):
+            spread = float(t["offer"]) - float(t["bid"])
+            txt += f"🟢 سعر الشراء (Ask): <code>${t['offer']:,.2f}</code> (سبريد <code>${spread:,.2f}</code>)\n"
         if t["change"] is not None:
             txt += f"التغير 24س: {'🟢' if t['change'] >= 0 else '🔴'} {t['change']:+.2f}%\n"
         if t["high"] and t["low"]:

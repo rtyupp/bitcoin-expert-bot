@@ -184,18 +184,19 @@ def has_open_position(asset_or_symbol: str) -> dict | None:
 
 
 def live_price(symbol_or_asset: str) -> dict:
-    """سعر لحظي من Capital.com مع كاش قصير (8 ثوانٍ) لمنع الحظر."""
+    """سعر لحظي مباشر من Capital.com (سعر البيع Bid وسعر الشراء Ask كما يظهر في تطبيق الجوال)."""
     epic = _epic(symbol_or_asset)
     now = time.time()
     cached = _PRICE_CACHE.get(epic)
-    if cached and (now - cached[0]) < _PRICE_TTL:
+    if cached and (now - cached[0]) < 2.0:  # كاش ثانيتين فقط لضمان التطابق اللحظي
         return cached[1]
 
     data = _request("GET", f"/markets/{epic}").json()
     snap = data.get("snapshot") or {}
     bid = float(snap.get("bid") or 0.0)
     offer = float(snap.get("offer") or bid)
-    price = (bid + offer) / 2.0 if (bid and offer) else (bid or offer)
+    # في تطبيق Capital.com على الجوال، السعر الافتراضي المعروض على الشارت والقائمة هو سعر الـ Bid
+    price = bid if bid > 0 else offer
     if price <= 0:
         raise RuntimeError(f"Capital.com لم يرجع سعراً لـ {epic}")
     pct_chg = snap.get("percentageChange")
@@ -203,6 +204,7 @@ def live_price(symbol_or_asset: str) -> dict:
         "price": price,
         "bid": bid,
         "offer": offer,
+        "mid": (bid + offer) / 2.0 if (bid and offer) else price,
         "change": float(pct_chg) if pct_chg is not None else None,
         "high": float(snap.get("high") or 0.0),
         "low": float(snap.get("low") or 0.0),
@@ -214,14 +216,14 @@ def live_price(symbol_or_asset: str) -> dict:
 
 
 def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
-    """يجلب الشموع التاريخية والحية مباشرة من Capital.com مع كاش 45 ثانية."""
+    """يجلب الشموع التاريخية والحية مباشرة من Capital.com (بسعر Bid المطابق لشارت الجوال)."""
     epic = _epic(symbol_or_asset)
     res = RESOLUTION_MAP.get(timeframe, "HOUR")
     max_bars = min(max(int(limit), 10), 1000)
     cache_key = (epic, res, max_bars)
     now = time.time()
     cached = _OHLCV_CACHE.get(cache_key)
-    if cached and (now - cached[0]) < _OHLCV_TTL:
+    if cached and (now - cached[0]) < 15.0:
         return cached[1].copy(), f"Capital.com ({epic})"
 
     data = _request("GET", f"/prices/{epic}", params={"resolution": res, "max": max_bars}).json()
@@ -229,22 +231,20 @@ def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
     if not prices:
         raise RuntimeError(f"Capital.com لم يرجع شموعاً لـ {epic} ({res})")
 
-    def _mid(d: dict | None) -> float:
+    def _bid(d: dict | None) -> float:
         if not d:
             return 0.0
         b = d.get("bid")
         a = d.get("ask")
-        if b is not None and a is not None:
-            return (float(b) + float(a)) / 2.0
         return float(b if b is not None else (a or 0.0))
 
     rows = []
     for p in prices:
         ts_str = p.get("snapshotTimeUTC") or p.get("snapshotTime")
-        op = _mid(p.get("openPrice"))
-        hi = _mid(p.get("highPrice"))
-        lo = _mid(p.get("lowPrice"))
-        cl = _mid(p.get("closePrice"))
+        op = _bid(p.get("openPrice"))
+        hi = _bid(p.get("highPrice"))
+        lo = _bid(p.get("lowPrice"))
+        cl = _bid(p.get("closePrice"))
         vol = float(p.get("lastTradedVolume") or 0.0)
         rows.append((ts_str, op, hi, lo, cl, vol))
 

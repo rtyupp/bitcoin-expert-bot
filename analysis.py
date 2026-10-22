@@ -350,7 +350,10 @@ def analyze(timeframe: str = "1h", asset: str = "btc") -> Report:
     close, vol = df["close"], df["volume"]
 
     w = cfg["weights"]
-    price = float(close.iloc[-1])
+    try:
+        price, change, _ = ticker(cfg["symbol"])
+    except Exception:  # noqa: BLE001
+        price, change = float(close.iloc[-1]), None
     score = 0.0
     reasons: list[str] = []
 
@@ -427,11 +430,6 @@ def analyze(timeframe: str = "1h", asset: str = "btc") -> Report:
         score -= w["vol"] * 0.5
 
     # 7) تغير 24س
-    change = None
-    try:
-        _, change, _ = ticker(cfg["symbol"])
-    except Exception:  # noqa: BLE001
-        pass
     if change is not None:
         if -8 <= change < -3:
             score += w["chg"]
