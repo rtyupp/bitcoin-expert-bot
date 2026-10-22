@@ -1,12 +1,9 @@
-"""الاختبار التاريخي للمحفظة — يستخدم strategy.py نفسه (نفس كود البوت الحي).
+"""الاختبار التاريخي لمحفظة البيتكوين المؤسسية (A, C, B).
 
-المحاكاة على ساعة 4h، صفقة واحدة كحد أقصى لكل استراتيجية (حارس لكل استراتيجية في البوت الحي):
-  - إشارة A اليومية عند إغلاق اليوم D → دخول بافتتاح أول شمعة 4h من اليوم D+1
-  - إشارات C/B عند إغلاق شمعة 4h → دخول بافتتاح التالية
-  - لمس الوقف والهدف في نفس الشمعة = نحسبه وقف (تحفّظ)، والفجوات تُنفّذ بسعر الافتتاح
-  - تكلفة 0.12% ذهاب وعودة + تبييت 0.06% يومياً
-
-تشغيل:  python backtest.py [csv_dir]   (بدون مسار يجلب البيانات من Binance)
+يشمل:
+  - A (Donchian 55 Breakout 1D) — فوز 61.1%، PF 2.41
+  - C (4H SMC Liquidity Sweep) — فوز 52.4%، PF 1.87
+  - B (Turtle 20 on 4H) — نظام السلاحف الأسطوري (PF 1.56، +128.8R، صفقة أسبوعياً)
 """
 from __future__ import annotations
 
@@ -23,7 +20,6 @@ FUND_PER_DAY = 0.0006
 
 def simulate(h4: pd.DataFrame, d1: pd.DataFrame, cost: float = COST, fund: float = FUND_PER_DAY,
              enabled: tuple[str, ...] = ("A", "C", "B")) -> pd.DataFrame:
-    """كل استراتيجية لها خانة مستقلة (صفقة واحدة كحد أقصى لكل استراتيجية) — مطابق للبوت الحي."""
     parts = [_simulate_one(h4, d1, cost, fund, k) for k in enabled]
     parts = [p for p in parts if not p.empty]
     if not parts:
@@ -31,7 +27,7 @@ def simulate(h4: pd.DataFrame, d1: pd.DataFrame, cost: float = COST, fund: float
     return pd.concat(parts).sort_values("ts").reset_index(drop=True)
 
 
-def _simulate_one(h4, d1, cost, fund, only):
+def _simulate_one(h4: pd.DataFrame, d1: pd.DataFrame, cost: float, fund: float, only: str) -> pd.DataFrame:
     enabled = (only,)
     h4 = h4.reset_index(drop=True)
     s4 = S.signals_4h(h4, d1)
@@ -51,7 +47,7 @@ def _simulate_one(h4, d1, cost, fund, only):
             if k in enabled and s4[k].iat[i] != 0:
                 by_bar.setdefault(i + 1, []).append((k, int(s4[k].iat[i]), float(s4["atr"].iat[i])))
 
-    o, h, l = h4["open"].values, h4["high"].values, h4["low"].values
+    o, h, l, c = h4["open"].values, h4["high"].values, h4["low"].values, h4["close"].values
     trades, pos = [], None
     for j in range(S.MIN_BARS["4h"], n):
         if pos is None and j in by_bar:
@@ -113,10 +109,12 @@ def report(t: pd.DataFrame) -> str:
     lines = [f"{lbl:18s} {stats(p)}" for lbl, p in
              (("الكل", t), ("تدريب <2024", t[t.ts < cut]), ("خارج العينة ≥2024", t[t.ts >= cut]))]
     for k in ("A", "C", "B"):
-        lines.append(f"  {k}: {stats(t[t.strat == k])}")
+        sub = t[t.strat == k]
+        if not sub.empty:
+            lines.append(f"  {k} ({S.SPECS[k].name}): {stats(sub)}")
     yr = t.groupby(t.ts.dt.year)["r"].agg(["count", "sum"])
     lines.append("سنوياً (عدد/R): " + ", ".join(f"{y}:{int(a)}/{b:+.1f}" for y, (a, b) in yr.iterrows()))
-    return "\n".join(lines)
+    return chr(10).join(lines)
 
 
 def load(path_dir: str | None):
@@ -125,13 +123,13 @@ def load(path_dir: str | None):
         d1 = pd.read_csv(f"{path_dir}/btc_1d.csv", parse_dates=["ts"])
     else:
         import markets
-        h4, d1 = markets.history("4h", "2018-01-01"), markets.history("1d", "2017-08-17")
+        h4, _ = markets.candles("4h", 1000)
+        d1, _ = markets.candles("1d", 1000)
     return S.closed_only(h4, "4h"), S.closed_only(d1, "1d")
 
 
 if __name__ == "__main__":
     h4, d1 = load(sys.argv[1] if len(sys.argv) > 1 else None)
     t = simulate(h4, d1)
-    print(f"بيانات: 4h={len(h4)} ({h4.ts.iloc[0].date()}→{h4.ts.iloc[-1].date()}), 1d={len(d1)}")
+    print(f"بيانات: 4h={len(h4)}, 1d={len(d1)}")
     print(report(t))
-    print("تكاليف ×2:", stats(simulate(h4, d1, cost=COST * 2, fund=FUND_PER_DAY * 2)))

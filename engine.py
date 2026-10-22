@@ -1,6 +1,4 @@
-"""المحرك: يفحص الشموع المكتملة، يطلق التوصيات، ينفّذها على Capital.com، ويدير الصفقات (وقف متحرك/إغلاق).
-
-كل استراتيجية لها خانة واحدة (لا تفتح صفقة جديدة لنفس الاستراتيجية وهي مفتوحة) — مطابق للاختبار التاريخي.
+"""المحرك المؤسسي للبيتكوين: يفحص الشموع المكتملة (Daily, 4H)، يطلق التوصيات، ينفّذها على Capital.com، ويدير الصفقات بالوقف المتحرك.
 """
 from __future__ import annotations
 
@@ -38,7 +36,6 @@ def _capital_on() -> bool:
 
 
 def live_quote() -> dict:
-    """سعر التنفيذ: Capital.com إن توفّر (bid/offer)، وإلا Binance."""
     if _capital_on():
         try:
             q = capital_trader.live_price("btc")
@@ -50,8 +47,8 @@ def live_quote() -> dict:
 
 
 def _age_ok(sig: S.Signal, now: pd.Timestamp) -> bool:
-    step = pd.Timedelta(days=1) if sig.spec.tf == "1d" else pd.Timedelta(hours=4)
     max_age = pd.Timedelta(hours=26 if sig.spec.tf == "1d" else config.MAX_SIGNAL_AGE_H)
+    step = pd.Timedelta(days=1) if sig.spec.tf == "1d" else pd.Timedelta(hours=4)
     return now - (sig.bar_ts + step) <= max_age
 
 
@@ -69,7 +66,6 @@ def open_from_signal(sig: S.Signal, now: pd.Timestamp | None = None, quote: dict
         return Event("skip", {"strategy": sig.strategy}, "إشارة قديمة")
     q = quote or live_quote()
     entry = q["offer"] if sig.side > 0 else q["bid"]
-    # فرق السعر بين Capital و Binance: نزيح سعر الإشارة بنفس الفرق قبل فحص الانزلاق
     basis = 0.0
     if q["src"] == "capital":
         try:
@@ -95,7 +91,6 @@ def open_from_signal(sig: S.Signal, now: pd.Timestamp | None = None, quote: dict
                                             lv["stop"], lv.get("tp"), allow_multiple=True)
             trade.update(mode="capital", dealId=res.get("dealId"), size=res["size"],
                          entry=float(res["level"]), risk_usd=round(res["size"] * sig.stop_dist, 2))
-            # أعد الحساب من سعر التنفيذ الفعلي
             if res.get("stopLevel"):
                 trade["stop"] = trade["init_stop"] = float(res["stopLevel"])
             if res.get("profitLevel"):
@@ -112,7 +107,6 @@ def open_from_signal(sig: S.Signal, now: pd.Timestamp | None = None, quote: dict
 
 
 def scan(h4: pd.DataFrame, d1: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
-    """يعالج كل شمعة مكتملة جديدة مرة واحدة فقط."""
     now = now or pd.Timestamp.now(tz="UTC")
     st = state.load()
     events: list[Event] = []
@@ -151,7 +145,6 @@ def _close(k: str, trade: dict, exit_px: float, reason: str, pnl_usd: float | No
 
 
 def manage(h4: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
-    """يتابع الصفقات المفتوحة: إغلاق بالوقف/الهدف، وتحريك الوقف المتحرك على الشموع المكتملة."""
     events: list[Event] = []
     st = state.load()
     if not st["active"]:
@@ -180,7 +173,6 @@ def manage(h4: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
                 if hit:
                     events.append(_close(k, tr, float(hit[0]), hit[1]))
                     continue
-            # وقف متحرك — على شموع 4h المكتملة منذ الدخول (مثل الاختبار)
             if spec.trail_r:
                 bars = h4[h4["ts"] >= opened.floor("4h")]
                 if len(bars):
@@ -222,7 +214,6 @@ def history_stats(hist: list[dict]) -> dict:
 
 
 def tick() -> list[Event]:
-    """دورة واحدة كاملة."""
     t0 = time.time()
     h4, d1, _ = load_data()
     ev = manage(h4) + scan(h4, d1)

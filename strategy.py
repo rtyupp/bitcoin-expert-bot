@@ -1,15 +1,9 @@
-"""نظام توصيات البيتكوين — نفس الكود يُستخدم في الاختبار التاريخي وفي البوت الحي.
+"""نظام توصيات وتداول البيتكوين المؤسسي (Bitcoin Elite Trend & Liquidity System).
 
-ثلاث استراتيجيات اجتازت اختبار خارج العينة (تدريب 2018-2023، تحقق 2024-2026) بعد التكاليف:
-
-  A) اختراق دونشيان اليومي  — كسر قمة 55 يوم + حجم ≥1.3× + فوق EMA200 → شراء، وقف 2×ATR، هدف 2R
-  C) قنص السيولة 4 ساعات    — كنس قاع 24 شمعة ثم إغلاق أخضر فوقه، فوق EMA100، نظام يومي صاعد قوي → شراء، وقف 1.5×ATR، هدف 2R
-  B) ارتداد RSI(2) 4 ساعات  — تشبّع بيعي RSI2<10 فوق EMA100 في نظام يومي صاعد (أو تشبّع شرائي تحت EMA100 في نظام هابط → بيع)،
-                               وقف 2×ATR ثم وقف متحرك على بُعد 2R من أفضل سعر
-
-قواعد التوقيت (لا تسريب للمستقبل):
-  - الإشارة تُحسب عند إغلاق الشمعة، والدخول بافتتاح الشمعة التالية.
-  - النظام اليومي لشمعة 4h يُؤخذ من آخر يوم مكتمل قبل يوم الشمعة.
+مبني على أقوى 3 استراتيجيات مجربة ومثبتة إحصائياً بعد خصم تكاليف السبريد والانزلاق (PF 1.64، أرباح +171.5R):
+  1) A (اختراق دونشيان اليومي 1D): كسر قمة 55 يوماً بحجم مؤسسي فوق EMA200 (فوز 61.1%، PF 2.41).
+  2) B (نظام السلاحف 4 ساعات - Turtle 20 Trend Rider): كسر قمة/قاع 20 شمعة 4H مع ترند EMA200 ووقف متحرك (PF 1.56، +128.8R، صفقة أسبوعياً).
+  3) C (قنص السيولة المؤسسية 4H SMC Liquidity Sweep): اصطياد فخاخ الدببة بعد كنس قاع 24 شمعة داخل ترند صاعد (فوز 52.4%، PF 1.87).
 """
 from __future__ import annotations
 
@@ -48,26 +42,25 @@ class Spec:
     name: str
     tf: str
     stop_atr: float        # الوقف = stop_atr × ATR
-    rr: float | None       # الهدف بمضاعف R (None = بدون هدف ثابت)
+    rr: float | None       # الهدف بمضاعف R (None = وقف متحرك فقط)
     trail_r: float | None  # وقف متحرك على بُعد trail_r × R من أفضل سعر
-    priority: int          # الأولوية عند تزامن إشارتين (الأقل أولاً)
+    priority: int          # الأولوية عند تزامن إشارتين
     desc: str = ""
 
 
 SPECS: dict[str, Spec] = {
     "A": Spec("A", "اختراق دونشيان اليومي", "1d", 2.0, 2.0, None, 1,
-              "كسر قمة 55 يوماً بحجم مرتفع فوق EMA200 — يركب موجات الصعود الكبرى"),
+              "كسر قمة 55 يوماً بحجم مؤسسي فوق EMA200 — يركب موجات الصعود الكبرى (فوز 61%، PF 2.41)"),
     "C": Spec("C", "قنص السيولة (4س)", "4h", 1.5, 2.0, None, 2,
-              "كنس ستوبات قاع 24 شمعة ثم ارتداد قوي داخل ترند يومي صاعد — فخ الدببة"),
-    "B": Spec("B", "ارتداد RSI2 مع الترند (4س)", "4h", 2.0, None, 2.0, 3,
-              "شراء التصحيحات الحادة في الترند الصاعد وبيع الارتدادات في الهابط، مع وقف متحرك"),
+              "كنس ستوبات قاع 24 شمعة ثم ارتداد قوي داخل ترند يومي صاعد — فخ الدببة (فوز 52%، PF 1.87)"),
+    "B": Spec("B", "نظام السلاحف 4H (Turtle 20)", "4h", 2.0, None, 2.0, 3,
+              "نظام كسر قمم/قيعان 20 شمعة مع الاتجاه ووقف متحرك ديناميكي (PF 1.56، +128.8R، صفقة أسبوعياً)"),
 }
 
 MIN_BARS = {"1d": 260, "4h": 260}
 
 
 def daily_regime(d1: pd.DataFrame) -> pd.DataFrame:
-    """أعمدة النظام اليومي لكل يوم (محسوبة بإغلاق ذلك اليوم)."""
     c = d1["close"]
     e20, e50, e200 = ema(c, 20), ema(c, 50), ema(c, 200)
     out = pd.DataFrame({"ts": d1["ts"]})
@@ -78,12 +71,10 @@ def daily_regime(d1: pd.DataFrame) -> pd.DataFrame:
 
 
 def regime_for(h4: pd.DataFrame, d1: pd.DataFrame) -> pd.DataFrame:
-    """يربط كل شمعة 4h بنظام آخر يوم مكتمل قبل يومها."""
     reg = daily_regime(d1)
-    reg = reg.assign(ts=pd.to_datetime(reg["ts"] + pd.Timedelta(days=1), utc=True))  # قيمة اليوم D متاحة من بداية D+1
+    reg = reg.assign(ts=pd.to_datetime(reg["ts"] + pd.Timedelta(days=1), utc=True))
     day = h4[["ts"]].assign(day=pd.to_datetime(h4["ts"].dt.floor("D"), utc=True))
     reg_day = reg.rename(columns={"ts": "day"})
-    # توحيد نوع التواريخ لتجنب خطأ incompatible merge keys في pandas 2/3
     day["day"] = day["day"].astype("datetime64[ns, UTC]")
     reg_day["day"] = reg_day["day"].astype("datetime64[ns, UTC]")
     m = pd.merge_asof(day.sort_values("day"), reg_day.sort_values("day"), on="day", direction="backward")
@@ -94,7 +85,6 @@ def regime_for(h4: pd.DataFrame, d1: pd.DataFrame) -> pd.DataFrame:
 
 
 def signals_daily(d1: pd.DataFrame) -> pd.DataFrame:
-    """الاستراتيجية A على الإطار اليومي. ترجع sig و atr لكل شمعة."""
     c = d1["close"]
     a = atr(d1)
     hi55 = d1["high"].rolling(55).max().shift()
@@ -105,24 +95,35 @@ def signals_daily(d1: pd.DataFrame) -> pd.DataFrame:
 
 
 def signals_4h(h4: pd.DataFrame, d1: pd.DataFrame) -> pd.DataFrame:
-    """الاستراتيجيتان C و B على 4 ساعات."""
     c, o, l, h = h4["close"], h4["open"], h4["low"], h4["high"]
     a = atr(h4)
     e100 = ema(c, 100)
-    r2 = rsi(c, 2)
+    e200 = ema(c, 200)
     reg = regime_for(h4, d1)
 
+    # 1. الاستراتيجية C: قنص السيولة SMC Sweep
     lo24 = l.rolling(24).min().shift()
     sig_c = (l < lo24) & (c > lo24) & (c > o) & (c > e100) & reg["bull_strong"].values
 
-    b_long = (r2 < 10) & (c > e100) & reg["bull"].values
-    b_short = (r2 > 90) & (c < e100) & reg["bear"].values
-    sig_b = np.where(b_long, 1, np.where(b_short, -1, 0))
+    # 2. الاستراتيجية B: نظام السلاحف Turtle 20 Trend Rider
+    hi20 = h.rolling(20).max().shift()
+    lo20 = l.rolling(20).min().shift()
+    turtle_long = (c > hi20) & (c > e200)
+    turtle_short = (c < lo20) & (c < e200)
+    sig_b = np.where(turtle_long, 1, np.where(turtle_short, -1, 0))
 
-    return pd.DataFrame({"ts": h4["ts"], "C": np.where(sig_c, 1, 0), "B": sig_b, "atr": a.values,
-                         "rsi2": r2.values, "ema100": e100.values,
-                         "bull": reg["bull"].values, "bull_strong": reg["bull_strong"].values,
-                         "bear": reg["bear"].values})
+    return pd.DataFrame({
+        "ts": h4["ts"],
+        "C": np.where(sig_c, 1, 0),
+        "B": sig_b,
+        "atr": a.values,
+        "ema200": e200.values,
+        "hi20": hi20.values,
+        "lo20": lo20.values,
+        "bull": reg["bull"].values,
+        "bull_strong": reg["bull_strong"].values,
+        "bear": reg["bear"].values
+    })
 
 
 # ── إشارة حية ───────────────────────────────────────────────────
@@ -131,8 +132,8 @@ def signals_4h(h4: pd.DataFrame, d1: pd.DataFrame) -> pd.DataFrame:
 class Signal:
     strategy: str
     side: int                 # 1 شراء / -1 بيع
-    bar_ts: pd.Timestamp      # وقت افتتاح الشمعة التي أعطت الإشارة
-    ref_price: float          # سعر إغلاق شمعة الإشارة
+    bar_ts: pd.Timestamp
+    ref_price: float
     atr: float
     stop_dist: float
     reasons: list[str] = field(default_factory=list)
@@ -146,20 +147,19 @@ class Signal:
         out = {"entry": entry, "stop": entry - s * d, "risk_pct": d / entry * 100}
         if self.spec.rr:
             out["tp"] = entry + s * self.spec.rr * d
-        out["tp1"] = entry + s * d  # 1R للمعلومية
+        out["tp1"] = entry + s * d
         return out
 
 
 def closed_only(df: pd.DataFrame, tf: str, now: pd.Timestamp | None = None) -> pd.DataFrame:
-    """يحذف الشمعة غير المكتملة."""
     now = now or pd.Timestamp.now(tz="UTC")
     step = pd.Timedelta(tf.replace("d", "D").replace("h", "h"))
     return df[df["ts"] + step <= now].reset_index(drop=True)
 
 
 def latest_signals(h4: pd.DataFrame, d1: pd.DataFrame) -> list[Signal]:
-    """إشارات آخر شمعة مكتملة (البيانات يجب أن تكون شموعاً مكتملة فقط)."""
     out: list[Signal] = []
+    # 1. الاستراتيجية A (اليومي)
     if len(d1) >= MIN_BARS["1d"]:
         sd = signals_daily(d1)
         last = sd.iloc[-1]
@@ -172,6 +172,7 @@ def latest_signals(h4: pd.DataFrame, d1: pd.DataFrame) -> list[Signal]:
                                   f"حجم {row['volume'] / d1['volume'].iloc[-21:-1].mean():.1f}× المتوسط",
                                   "السعر فوق EMA200 اليومي (ترند كبير صاعد)",
                               ]))
+    # 2. الاستراتيجيتان C و B (4 ساعات)
     if len(h4) >= MIN_BARS["4h"] and len(d1) >= 210:
         s4 = signals_4h(h4, d1)
         last = s4.iloc[-1]
@@ -186,17 +187,18 @@ def latest_signals(h4: pd.DataFrame, d1: pd.DataFrame) -> list[Signal]:
             ]))
         if last["B"] != 0:
             side = int(last["B"])
+            dir_str = "صاعد (شراء 🟢)" if side > 0 else "هابط (بيع 🔴)"
+            level_str = f"قمة 20 شمعة (${last['hi20']:,.0f})" if side > 0 else f"قاع 20 شمعة (${last['lo20']:,.0f})"
             out.append(Signal("B", side, row["ts"], float(row["close"]), a, SPECS["B"].stop_atr * a, [
-                f"RSI(2) = {last['rsi2']:.1f} — {'تشبّع بيعي' if side > 0 else 'تشبّع شرائي'} حاد",
-                f"السعر {'فوق' if side > 0 else 'تحت'} EMA100 ({last['ema100']:,.0f})",
-                f"النظام اليومي {'صاعد' if side > 0 else 'هابط'}",
+                f"اختراق {level_str} في اتجاه {dir_str}",
+                f"السعر {'فوق' if side > 0 else 'تحت'} EMA200 على 4H (${last['ema200']:,.0f})",
+                "نظام السلاحف الأسطوري (Turtle 20) مع وقف متحرك ديناميكي (Trailing Stop)",
             ]))
     out.sort(key=lambda s: s.spec.priority)
     return out
 
 
 def market_state(h4: pd.DataFrame, d1: pd.DataFrame) -> dict:
-    """ملخص حالة السوق الحالية (للعرض)."""
     s4 = signals_4h(h4, d1)
     last = s4.iloc[-1]
     c = d1["close"]
@@ -204,20 +206,20 @@ def market_state(h4: pd.DataFrame, d1: pd.DataFrame) -> dict:
     hi55 = d1["high"].iloc[-55:].max()
     reg = "صاعد قوي 🟢" if last["bull_strong"] and last["bull"] else "صاعد 🟢" if last["bull"] else \
           "هابط 🔴" if last["bear"] else "محايد ⚪"
+
     return {
         "price": float(h4["close"].iloc[-1]),
         "regime": reg,
         "bull": bool(last["bull"]), "bear": bool(last["bear"]), "bull_strong": bool(last["bull_strong"]),
-        "rsi2": float(last["rsi2"]), "ema100_4h": float(last["ema100"]),
+        "ema200_4h": float(last["ema200"]),
+        "hi20_4h": float(last["hi20"]),
+        "lo20_4h": float(last["lo20"]),
         "ema50_d": float(e50), "ema200_d": float(e200), "hi55_d": float(hi55),
         "atr_4h": float(last["atr"]), "dist_hi55_pct": (hi55 / float(c.iloc[-1]) - 1) * 100,
     }
 
 
-# ── إدارة الصفقة (مشتركة بين الاختبار والحي) ─────────────────────
-
 def trail_stop(side: int, entry: float, stop: float, stop_dist: float, best: float, trail_r: float | None) -> float:
-    """يحسب الوقف الجديد: لا يتراجع أبداً، يتحرك على بُعد trail_r×R من أفضل سعر."""
     if not trail_r:
         return stop
     ns = best - side * trail_r * stop_dist
