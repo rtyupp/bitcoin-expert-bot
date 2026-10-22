@@ -18,10 +18,23 @@ BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 EPIC_MAP = {
     "btc": "BTCUSD",
     "BTC/USDT": "BTCUSD",
+    "BTC/USD": "BTCUSD",
     "BTCUSD": "BTCUSD",
     "gold": "GOLD",
     "PAXG/USDT": "GOLD",
+    "XAU/USD": "GOLD",
     "GOLD": "GOLD",
+}
+
+RESOLUTION_MAP = {
+    "1m": "MINUTE",
+    "5m": "MINUTE_5",
+    "15m": "MINUTE_15",
+    "30m": "MINUTE_30",
+    "1h": "HOUR",
+    "4h": "HOUR_4",
+    "1d": "DAY",
+    "1w": "WEEK",
 }
 
 DEFAULT_SIZES = {
@@ -141,6 +154,42 @@ def live_price(symbol_or_asset: str) -> dict:
         "ts": time.time(),
         "exchange": f"Capital.com ({epic})",
     }
+
+
+def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
+    """يجلب الشموع التاريخية والحية مباشرة من Capital.com بصيغة DataFrame مطابقة."""
+    import pandas as pd
+
+    epic = _epic(symbol_or_asset)
+    res = RESOLUTION_MAP.get(timeframe, "HOUR")
+    max_bars = min(max(int(limit), 10), 1000)
+    data = _request("GET", f"/prices/{epic}", params={"resolution": res, "max": max_bars}).json()
+    prices = data.get("prices") or []
+    if not prices:
+        raise RuntimeError(f"Capital.com لم يرجع شموعاً لـ {epic} ({res})")
+
+    def _mid(d: dict | None) -> float:
+        if not d:
+            return 0.0
+        b = d.get("bid")
+        a = d.get("ask")
+        if b is not None and a is not None:
+            return (float(b) + float(a)) / 2.0
+        return float(b if b is not None else (a or 0.0))
+
+    rows = []
+    for p in prices:
+        ts_str = p.get("snapshotTimeUTC") or p.get("snapshotTime")
+        op = _mid(p.get("openPrice"))
+        hi = _mid(p.get("highPrice"))
+        lo = _mid(p.get("lowPrice"))
+        cl = _mid(p.get("closePrice"))
+        vol = float(p.get("lastTradedVolume") or 0.0)
+        rows.append((ts_str, op, hi, lo, cl, vol))
+
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    df["ts"] = pd.to_datetime(df["ts"])
+    return df, f"Capital.com ({epic})"
 
 
 def open_trade(

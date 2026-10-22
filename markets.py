@@ -145,9 +145,17 @@ def _tick_okx(base: str, quote: str):
 _TICKS = {"binance": _tick_binance, "bybit": _tick_bybit, "okx": _tick_okx}
 
 
-# ── الواجهة العامة (مطابقة القديم) ──
+# ── الواجهة العامة (Capital.com أولاً لكل الشموع والأسعار، والمنصات كاحتياطي) ──
 def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 250):
-    """جلب الشموع — يبدأ من المصدر الناجح سابقاً. يرجّع (DataFrame, المصدر)."""
+    """جلب الشموع — يبدأ من Capital.com أولاً، ثم المنصات كاحتياطي. يرجّع (DataFrame, المصدر)."""
+    try:
+        import capital_trader
+
+        if capital_trader.is_configured():
+            return capital_trader.fetch_ohlcv(symbol, timeframe, limit)
+    except Exception:  # noqa: BLE001
+        pass
+
     base, quote = _pair(symbol)
     errors = []
     for src in _order(symbol):
@@ -165,7 +173,22 @@ def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 250):
 
 
 def tick(symbol: str) -> tuple[float, float, float, float, str]:
-    """(السعر، تغير 24س %، أعلى 24س، أدنى 24س، المصدر)."""
+    """(السعر، تغير 24س %، أعلى 24س، أدنى 24س، المصدر) — Capital.com أولاً."""
+    try:
+        import capital_trader
+
+        if capital_trader.is_configured():
+            lp = capital_trader.live_price(symbol)
+            return (
+                float(lp["price"]),
+                float(lp["change"] or 0.0),
+                float(lp["high"] or 0.0),
+                float(lp["low"] or 0.0),
+                str(lp["exchange"]),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     base, quote = _pair(symbol)
     errors = []
     for src in _order(symbol):
