@@ -1,45 +1,25 @@
-"""إعدادات البوت من متغيرات البيئة."""
+"""الإعدادات من متغيرات البيئة."""
 import os
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
-CRON_SECRET = os.environ.get("CRON_SECRET", "")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DAILY_CHAT_ID = os.environ.get("DAILY_CHAT_ID", "")  # اتركه فارغاً لتعطيل التنبيه اليومي
-
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
-
-WEBHOOK_PATH = "/webhook"
-PORT = int(os.environ.get("PORT", "8080"))
-
-# وضع webhook إذا كنا على Render أو أي منصة تعطي رابطاً عاماً — وإلا polling
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
-if not WEBHOOK_URL and RENDER_EXTERNAL_URL:
-    WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
-WEBHOOK_MODE = bool(WEBHOOK_URL)
-
-# إدارة المخاطر
-ACCOUNT_SIZE = float(os.environ.get("ACCOUNT_SIZE", "0"))  # حجم المحفظة بالدولار (0 = غير مضبوط)
-RISK_PERCENT = float(os.environ.get("RISK_PERCENT", "1.0"))  # نسبة المخاطرة لكل صفقة
-
-# DeepSeek API (اختياري)
-DEEPSEEK_BASE = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
-
+_chat = os.environ.get("DAILY_CHAT_ID", "").strip()
 try:
-    ADMIN_CHAT_ID = int(DAILY_CHAT_ID.strip()) if DAILY_CHAT_ID.strip() else None
+    ADMIN_CHAT_ID = int(_chat) if _chat else None
 except ValueError:
     ADMIN_CHAT_ID = None
 
-# تنبيه الصيدة (المراقبة التلقائية للإشارات القوية)
-SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "4.0"))  # |score| ≥ هذه القيمة = صيدة
-SIGNAL_MIN_AGREEMENT = int(os.environ.get("SIGNAL_MIN_AGREEMENT", "1"))  # أدنى عدد أطر متوافقة (1=مطفى — backtest أظهر عدم فائدته)
-SIGNAL_COOLDOWN_MIN = int(os.environ.get("SIGNAL_COOLDOWN_MIN", "30"))  # تهدئة بين التنبيهات
-SIGNAL_INTERVAL_SEC = int(os.environ.get("SIGNAL_INTERVAL_SEC", "300"))  # فترة الفحص (وضع polling)
-
-# Capital.com Demo API (للتداول الآلي واليدوي على الحساب التجريبي)
+# Capital.com Demo
 CAPITAL_EMAIL = os.environ.get("CAPITAL_EMAIL", "")
 CAPITAL_API_KEY = os.environ.get("CAPITAL_API_KEY", "")
 CAPITAL_API_PASSWORD = os.environ.get("CAPITAL_API_PASSWORD", "")
-CAPITAL_AUTO_TRADE = os.environ.get("CAPITAL_AUTO_TRADE", "1") == "1"
 
+# الافتراضيات (قابلة للتغيير من البوت وتُحفظ في state.json)
+AUTO_TRADE = os.environ.get("CAPITAL_AUTO_TRADE", "1") == "1"
+RISK_PCT = float(os.environ.get("RISK_PCT", "1.0"))  # مخاطرة كل صفقة % من رصيد كابيتال
+
+# المحرك
+LOOP_SEC = int(os.environ.get("LOOP_SEC", "60"))
+MAX_ENTRY_SLIP_R = 0.5   # تجاهل الإشارة إذا ابتعد السعر أكثر من 0.5R عن سعر الإشارة (تأخر)
+MAX_SIGNAL_AGE_H = 6     # تجاهل إشارة 4h أقدم من 6 ساعات منذ الإغلاق (يومي: 26 ساعة)
+
+STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))

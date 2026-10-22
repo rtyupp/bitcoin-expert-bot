@@ -380,6 +380,34 @@ def move_stop_to_breakeven(asset_or_symbol: str, entry_price: float | None = Non
     return updated
 
 
+def get_position(deal_id: str) -> dict | None:
+    """يرجع الصفقة المفتوحة بهذا dealId أو None إذا أُغلقت."""
+    pos_data = _request("GET", "/positions").json()
+    for item in pos_data.get("positions") or []:
+        p = item.get("position") or {}
+        if p.get("dealId") == deal_id:
+            m = item.get("market") or {}
+            return {"dealId": deal_id, "epic": m.get("epic"), "direction": p.get("direction"),
+                    "size": p.get("size"), "level": p.get("level"), "stopLevel": p.get("stopLevel"),
+                    "profitLevel": p.get("profitLevel"), "upl": p.get("upl", 0.0),
+                    "bid": m.get("bid"), "offer": m.get("offer")}
+    return None
+
+
+def realized_pnl(deal_id: str, last_period_sec: int = 7 * 86400) -> float | None:
+    """الربح/الخسارة المحققة لصفقة مغلقة (من سجل المعاملات)."""
+    try:
+        j = _request("GET", "/history/transactions", params={"lastPeriod": min(last_period_sec, 2_592_000)}).json()
+    except Exception:  # noqa: BLE001
+        return None
+    total, found = 0.0, False
+    for t in j.get("transactions") or []:
+        if t.get("dealId") == deal_id and t.get("transactionType") == "TRADE":
+            total += float(t.get("size") or 0.0)
+            found = True
+    return total if found else None
+
+
 def close_position(deal_id: str) -> dict:
     """يغلق صفقة محددة عبر dealId."""
     r = _request("DELETE", f"/positions/{deal_id}").json()
