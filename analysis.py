@@ -149,27 +149,37 @@ def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
             return 1.0, "قرب اختراق صاعد — ينقصه تأكيد الحجم", ["السعر يختبر الحد العلوي لبولينجر"]
         return 0.0, "داخل النطاق — انتظار صيدة سيولة", ["لا يوجد كنس سيولة أو اختراق مؤسسي حالياً"]
 
-    if kind in ("bb_trap_donchian", "macd_ema200"):
-        vol_ok = vol_ratio > cfg.get("volume_mult", 1.2)
-        bb_fake_lo = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > o.iloc[i]
-        bb_fake_hi = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < o.iloc[i]
-        don_up = c.iloc[i] > sw20_hi and e20 > e50 and c.iloc[i] > e200 and adx_now > 22 and vol_ok
-        don_dn = c.iloc[i] < sw20_lo and e20 < e50 and c.iloc[i] < e200 and adx_now > 22 and vol_ok
+    if kind in ("smc_ema20_reclaim", "bb_trap_donchian", "macd_ema200"):
+        ip2 = i - 2 if len(c) >= 4 else ip
+        lo_p2 = float(ind["bb_lo"].iloc[ip2])
+        up_p2 = float(ind["bb_up"].iloc[ip2])
+        e20_p = float(ind["ema20"].iloc[ip])
 
-        if bb_fake_lo and (c.iloc[i] > e200 or rsi_prev < 35):
-            return 3.5, "ارتداد مصيدة بولينجر السفلية (Bear Trap)", [f"كسر كاذب تحت بولينجر ({lo_p:,.0f}) واسترداد شرائي مباشر"]
-        if don_up:
-            return 3.5, "اختراق قناة Donchian 20 صاعد مع الاتجاه", [f"اختراق قمة 20 شمعة ({sw20_hi:,.0f}) بدعم ADX={adx_now:.0f} وفوق EMA200"]
-        if bb_fake_hi and (c.iloc[i] < e200 or rsi_prev > 65):
-            return -3.5, "ارتداد مصيدة بولينجر العلوية (Bull Trap)", [f"كسر كاذب فوق بولينجر ({up_p:,.0f}) ورفض بيعي مباشر"]
-        if don_dn:
-            return -3.5, "كسر قناة Donchian 20 هابط مع الاتجاه", [f"كسر قاع 20 شمعة ({sw20_lo:,.0f}) بدعم ADX={adx_now:.0f} وتحت EMA200"]
+        recent_swept_lo = (l.iloc[ip] <= lo_p) or (l.iloc[ip2] <= lo_p2) or (l.iloc[ip] < sw20_lo_p)
+        recent_swept_hi = (h.iloc[ip] >= up_p) or (h.iloc[ip2] >= up_p2) or (h.iloc[ip] > sw20_hi_p)
+        cross_up_e20 = c.iloc[i] > e20 and c.iloc[ip] <= e20_p and c.iloc[i] > o.iloc[i]
+        cross_dn_e20 = c.iloc[i] < e20 and c.iloc[ip] >= e20_p and c.iloc[i] < o.iloc[i]
+        bb_trap_up = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > h.iloc[ip] and c.iloc[i] > o.iloc[i] and c.iloc[i] > e200
+        bb_trap_dn = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < l.iloc[ip] and c.iloc[i] < o.iloc[i] and c.iloc[i] < e200
 
-        if c.iloc[i] > e200 and e20 > e50:
-            return 1.0, "ميل صاعد فوق EMA200 — انتظار نقطة قنص", ["الاتجاه العام صاعد — بانتظار مصيدة سيولة أو اختراق"]
-        if c.iloc[i] < e200 and e20 < e50:
-            return -1.0, "ميل هابط تحت EMA200 — انتظار نقطة قنص", ["الاتجاه العام هابط — بانتظار مصيدة سيولة أو كسر"]
-        return 0.0, "تذبذب محايد — انتظار", ["لا توجد مصيدة بولينجر أو اختراق قناة مكتمل"]
+        if c.iloc[i] > e200 and ((recent_swept_lo and cross_up_e20 and rsi_now < 62) or bb_trap_up):
+            return (
+                3.5,
+                "قنص سيولة القاع واسترداد EMA20 مع الاتجاه الصاعد",
+                [f"كنس سيولة القاع ({sw20_lo:,.0f}) ثم إغلاق صاعد فوق EMA20 ({e20:,.0f}) وفوق EMA200"],
+            )
+        if c.iloc[i] < e200 and ((recent_swept_hi and cross_dn_e20 and rsi_now > 38) or bb_trap_dn):
+            return (
+                -3.5,
+                "قنص سيولة القمة وكسر EMA20 مع الاتجاه الهابط",
+                [f"كنس سيولة القمة ({sw20_hi:,.0f}) ثم إغلاق هابط تحت EMA20 ({e20:,.0f}) وتحت EMA200"],
+            )
+
+        if c.iloc[i] > e200 and recent_swept_lo:
+            return 1.0, "مراقبة سيولة القاع — بانتظار الإغلاق فوق EMA20", ["تم كنس سيولة القاع — ننتظر شمعة تأكيد تغلق فوق EMA20"]
+        if c.iloc[i] < e200 and recent_swept_hi:
+            return -1.0, "مراقبة سيولة القمة — بانتظار الإغلاق تحت EMA20", ["تم كنس سيولة القمة — ننتظر شمعة تأكيد تغلق تحت EMA20"]
+        return 0.0, "تذبذب محايد — انتظار صيدة مؤكدة", ["لا يوجد كنس سيولة مؤكد بكسر EMA20 مع الاتجاه العام"]
 
     return 0.0, "—", []
 
@@ -564,6 +574,7 @@ def breakout_signal(timeframe: str = "1h", asset: str = "btc") -> dict | None:
         "label": strat_label,
         "strength": strat_score,
         "price": float(df["close"].iloc[i]),
+        "atr": float(ind["atr"].iloc[i]),
         "timeframe": timeframe,
         "exchange": exchange,
     }

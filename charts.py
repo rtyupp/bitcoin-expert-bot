@@ -60,16 +60,17 @@ def signal_series(df, ind, cfg) -> np.ndarray:
                 out[i] = 1.0
             elif (swept_hi or bb_fake_hi) and c[i] < o[i] and rsi[i] > 50 and (c[i] < e200[i] or rsi[i - 1] > 68):
                 out[i] = -1.0
-    else:  # bb_trap_donchian / macd_ema200
+    else:  # smc_ema20_reclaim / bb_trap_donchian / macd_ema200
         for i in range(20, n - 1):
-            vol_ok = v20[i] > 0 and vol[i] > mult * v20[i]
-            bb_fake_lo = c[i - 1] < lo[i - 1] and c[i] > lo[i] and c[i] > o[i]
-            bb_fake_hi = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < o[i]
-            don_up = c[i] > sw20_hi[i] and e20[i] > e50[i] and c[i] > e200[i] and adx[i] > 22 and vol_ok
-            don_dn = c[i] < sw20_lo[i] and e20[i] < e50[i] and c[i] < e200[i] and adx[i] > 22 and vol_ok
-            if (bb_fake_lo and (c[i] > e200[i] or rsi[i - 1] < 35)) or don_up:
+            recent_swept_lo = (l[i - 1] <= lo[i - 1]) or (l[i - 2] <= lo[i - 2]) or (l[i - 1] < sw20_lo[i - 1])
+            recent_swept_hi = (h[i - 1] >= up[i - 1]) or (h[i - 2] >= up[i - 2]) or (h[i - 1] > sw20_hi[i - 1])
+            cross_up_e20 = c[i] > e20[i] and c[i - 1] <= e20[i - 1] and c[i] > o[i]
+            cross_dn_e20 = c[i] < e20[i] and c[i - 1] >= e20[i - 1] and c[i] < o[i]
+            bb_trap_up = c[i - 1] < lo[i - 1] and c[i] > lo[i] and c[i] > h[i - 1] and c[i] > o[i] and c[i] > e200[i]
+            bb_trap_dn = c[i - 1] > up[i - 1] and c[i] < up[i] and c[i] < l[i - 1] and c[i] < o[i] and c[i] < e200[i]
+            if c[i] > e200[i] and ((recent_swept_lo and cross_up_e20 and rsi[i] < 62) or bb_trap_up):
                 out[i] = 1.0
-            elif (bb_fake_hi and (c[i] < e200[i] or rsi[i - 1] > 65)) or don_dn:
+            elif c[i] < e200[i] and ((recent_swept_hi and cross_dn_e20 and rsi[i] > 38) or bb_trap_dn):
                 out[i] = -1.0
 
     out[:20] = 0

@@ -65,20 +65,22 @@ def _alert_text_signal(sig: dict, plan: dict | None = None) -> str:
 
 
 def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
-    """خطة الصفقة + شارت — الخطة تُحسب من شمعة الإشارة نفسها (آخر شمعة)
-    حتى يتطابق الشارت والرسالة والمتابعة دائماً مع الإشارة اللي أطلقت التنبيه."""
+    """خطة الصفقة + شارت — الخطة تُحسب من شمعة وفريم الإشارة نفسها (1h)
+    حتى يتطابق الشارت والرسالة والأهداف دائماً مع الإشارة اللي أطلقت التنبيه."""
     import charts
+    import markets as _markets
 
     cfg = assets.get(asset_key)
-    df = charts.fetch_4h(cfg["symbol"], days=20)
+    tf = sig.get("timeframe", "1h")
+    df, _ = _markets.fetch_ohlcv(cfg["symbol"], tf, 120)
     plan = charts.analyze_chart(df, asset_key)
 
     import analysis as _analysis
 
     n = len(df)
     si = n - 2 if n >= 2 else 0  # شمعة الإشارة = آخر شمعة مغلقة
-    atr = float(_analysis.indicators(df)["atr"].iloc[si])
-    entry = float(df["close"].iloc[si])
+    atr = float(sig.get("atr") or _analysis.indicators(df)["atr"].iloc[si])
+    entry = float(sig.get("price") or df["close"].iloc[si])
     d = 1 if sig.get("direction", "long") == "long" else -1
     sd = atr * cfg["stop_mult"]
     plan = {
@@ -92,8 +94,6 @@ def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
         "strength": sig["strength"],
     }
     try:
-        import markets as _markets
-
         live = _markets.ticker(cfg["symbol"])[0]
     except Exception:  # noqa: BLE001
         live = entry
@@ -102,13 +102,17 @@ def _build_chart_package(asset_key: str, sig: dict) -> tuple[dict, bytes]:
 
 
 async def check_and_alert(bot, target: int | None = None) -> dict:
-    """يفحص إشارة الاستراتيجية لكل أصل ويرسل تنبيهاً عند تحققها."""
+    """يفحص إشارة الاستراتيجية لكل أصل ويرسل تنبيهاً عند تحققها (فقط إذا لا توجد صيدة مفتوحة لنفس الأصل)."""
     target = target or config.ADMIN_CHAT_ID
     if target is None:
         return {"sent": False, "reason": "no_chat_id"}
 
     out: dict[str, dict] = {}
     for key in assets.keys():
+        # منع إرسال صيدة جديدة إذا كان هناك صيدة مفتوحة لم تصل للهدف أو الوقف بعد
+        if key in _watch:
+            out[key] = {"sent": False, "reason": "active_watch_in_progress"}
+            continue
         try:
             sig = await asyncio.to_thread(analysis.breakout_signal, "1h", key)
         except Exception as e:  # noqa: BLE001
