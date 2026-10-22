@@ -19,7 +19,7 @@ def test_system():
     st = S.market_state(h4, d1)
     assert st["price"] > 0, "سعر غير صحيح"
     assert "regime" in st, "نظام السوق مفقود"
-    print(f"  ✓ حالة السوق: سعر {st['price']:,.2f} | نظام {st['regime']} | قمة 20 شمعة {st['hi20_4h']:,.0f}")
+    print(f"  ✓ حالة السوق: سعر {st['price']:,.2f} | نظام {st['regime']} | سحابة إيشيموكو Span A: {st['ichimoku_span_a']:,.0f}")
 
     print("▶ 3. اختبار رسم الشارت (Pillow)...")
     png = chart.render(h4, "BTC End-to-End Test", live=st["price"])
@@ -36,7 +36,7 @@ def test_system():
     t = backtest.simulate(h4_bt, d1_bt)
     stats = backtest.stats(t)
     assert stats["n"] > 100, f"عدد صفقات قليل: {stats['n']}"
-    assert stats["pf"] >= 1.3, f"عامل الربح ضعيف: {stats['pf']}"
+    assert stats["pf"] >= 1.5, f"عامل الربح ضعيف: {stats['pf']}"
     print(f"  ✓ نتائج الاختبار التاريخي: {stats['n']} صفقة | فوز {stats['win']}% | PF {stats['pf']} | +{stats['total_r']}R")
 
     print("▶ 6. اختبار دورة المحرك (Engine Tick)...")

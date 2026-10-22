@@ -1,9 +1,4 @@
-"""الاختبار التاريخي لمحفظة البيتكوين المؤسسية (A, C, B).
-
-يشمل:
-  - A (Donchian 55 Breakout 1D) — فوز 61.1%، PF 2.41
-  - C (4H SMC Liquidity Sweep) — فوز 52.4%، PF 1.87
-  - B (Turtle 20 on 4H) — نظام السلاحف الأسطوري (PF 1.56، +128.8R، صفقة أسبوعياً)
+"""الاختبار التاريخي لمحفظة البيتكوين العالمية (Donchian 55 + SMC Sweep + Jesse Ichimoku).
 """
 from __future__ import annotations
 
@@ -48,6 +43,7 @@ def _simulate_one(h4: pd.DataFrame, d1: pd.DataFrame, cost: float, fund: float, 
                 by_bar.setdefault(i + 1, []).append((k, int(s4[k].iat[i]), float(s4["atr"].iat[i])))
 
     o, h, l, c = h4["open"].values, h4["high"].values, h4["low"].values, h4["close"].values
+    bb_mid = s4["bb_mid"].values
     trades, pos = [], None
     for j in range(S.MIN_BARS["4h"], n):
         if pos is None and j in by_bar:
@@ -58,13 +54,16 @@ def _simulate_one(h4: pd.DataFrame, d1: pd.DataFrame, cost: float, fund: float, 
                    "tp": e + side * spec.rr * d if spec.rr else None, "best": e, "j0": j}
         if pos is None:
             continue
-        s, e, d, st, tp = pos["side"], pos["e"], pos["d"], pos["stop"], pos["tp"]
+        s, e, d, st, tp, strat_k = pos["side"], pos["e"], pos["d"], pos["stop"], pos["tp"], pos["k"]
         exit_px = None
         if s > 0:
             if l[j] <= st:
                 exit_px = min(st, o[j])
             elif tp is not None and h[j] >= tp:
                 exit_px = max(tp, o[j]) if j > pos["j0"] else tp
+            elif strat_k == "B" and c[j] < bb_mid[j]:
+                # خروج Jesse: إغلاق تحت خط الوسط للبولينجر
+                exit_px = c[j]
             else:
                 pos["best"] = max(pos["best"], h[j])
         else:
@@ -72,6 +71,9 @@ def _simulate_one(h4: pd.DataFrame, d1: pd.DataFrame, cost: float, fund: float, 
                 exit_px = max(st, o[j])
             elif tp is not None and l[j] <= tp:
                 exit_px = min(tp, o[j]) if j > pos["j0"] else tp
+            elif strat_k == "B" and c[j] > bb_mid[j]:
+                # خروج Jesse: إغلاق فوق خط الوسط للبولينجر
+                exit_px = c[j]
             else:
                 pos["best"] = min(pos["best"], l[j])
         if exit_px is None:

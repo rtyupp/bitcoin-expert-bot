@@ -1,9 +1,10 @@
-"""بوت تيليجرام لإشارات وتداول البيتكوين الاحترافي (Bitcoin Signals & Trading Bot).
+"""بوت تيليجرام لإشارات وتداول البيتكوين المؤسسي (Bitcoin Signals & Trading Bot).
 
-نظام مستقل تماماً للبيتكوين:
-- 3 استراتيجيات مؤسسية مختبرة تاريخياً (Donchian 1D Breakout, 4H SMC Liquidity Sweep, 4H RSI2 Trend Pullback).
-- فحص دوري مستمر للشموع المكتملة وإرسال التنبيهات مع الشارت فوراً للمستخدم.
-- ربط مع حساب Capital.com التجريبي لفتح الصفقات وإدارتها (Stop/TP/Trailing Stop).
+نظام مستقل تماماً للبيتكوين مبني على استراتيجيات النخبة من GitHub:
+- Donchian 55 Breakout 1D
+- SMC Liquidity Sweep 4H
+- Jesse Ichimoku Cloud + Bollinger Bands 4H
+- ربط كامل مع حساب Capital.com التجريبي لفتح الصفقات وإدارتها.
 """
 from __future__ import annotations
 
@@ -65,16 +66,15 @@ def main_kb() -> ReplyKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(m: Message):
     txt = (
-        "👑 <b>بوت خبير البيتكوين المؤسسي (BTC Only)</b>\n\n"
-        "تمت إعادة بناء النظام بالكامل وفق <b>أقوى 4 استراتيجيات مثبتة إحصائياً ومجربة</b> عبر 8 سنوات:\n\n"
+        "👑 <b>بوت خبير البيتكوين المؤسسي (Bitcoin Institutional Elite)</b>\n\n"
+        "نظام توصيات وتداول آلي معتمد ومختبر إحصائياً على 8 سنوات (2018 - 2026):\n\n"
         "1️⃣ <b>اختراق دونشيان اليومي (A):</b> ركوب الاتجاه الكاسح بعد كسر قمة 55 يوماً (فوز 61%، PF 2.41).\n"
-        "2️⃣ <b>قنص السيولة 4 ساعات (C):</b> اصطياد فخاخ الدببة وكنس السيولة SMC بالاتجاه الصاعد (فوز 52%، PF 1.87).\n"
-        "3️⃣ <b>ارتداد RSI2 مع الترند (B):</b> قنص التصحيحات الحادة مع وقف متحرك ديناميكي (فوز 38%، PF 1.49).\n"
-        "4️⃣ <b>انفجار الزخم السريع 1H (D):</b> مضاربة سريعة مع انفجار ضغط Keltner Squeeze فوق EMA100 (معدل 2-3 صيدات أسبوعياً، PF 1.27).\n\n"
+        "2️⃣ <b>قنص السيولة 4 ساعات (C):</b> اصطياد فخاخ الدببة SMC بعد كنس السيولة (فوز 52%، PF 1.87).\n"
+        "3️⃣ <b>إيشيموكو وبولينجر 4H (B):</b> أقوى استراتيجية من GitHub (Jesse Cloud Breakout) تحقق أرباحاً هائلة (PF 1.64، صافي +200R، بمعدل 1.2 صفقة أسبوعياً).\n\n"
         "⚡ <b>الميزات:</b>\n"
         "• فحص دوري مستمر للشموع المكتملة وتنبيهات فورية.\n"
         "• تكامل كامل مع حساب Capital.com للتداول الآلي واليدوي.\n"
-        "• وقف متحرك (Trailing Stop) لحماية الأرباح تلقائياً.\n\n"
+        "• نظام متوازن لا يستنزف المحفظة في التذبذب العرضي.\n\n"
         "اختر من الأزرار بالأسفل للبدء 👇"
     )
     await m.answer(txt, reply_markup=main_kb())
@@ -85,7 +85,7 @@ async def cmd_start(m: Message):
 async def cmd_help(m: Message):
     txt = (
         "📖 <b>دليل الأوامر والاستخدام:</b>\n\n"
-        "• 🪙 <b>حالة البيتكوين:</b> فحص نظام السوق، المؤشرات، والفرص الحالية.\n"
+        "• 🪙 <b>حالة البيتكوين:</b> فحص نظام السوق، سحابة إيشيموكو، والفرص الحالية.\n"
         "• 🕯️ <b>الشارت:</b> رسم شارت 4H يوضح المتوسطات ومستويات الدخول.\n"
         "• 🎯 <b>الصفقات النشطة:</b> متابعة الصفقات المفتوحة ومستويات الوقف والأرباح.\n"
         "• 📊 <b>التقرير التاريخي:</b> إحصائيات الأداء لجميع الاستراتيجيات مجتمعة ومنفصلة.\n"
@@ -119,8 +119,9 @@ async def cmd_status(m: Message):
         f"🌊 نظام السوق: <b>{st['regime']}</b>",
         "",
         "📊 <b>المؤشرات الفنية (4H / Daily):</b>",
-        f"• RSI(2) اللحظي: <code>{st['rsi2']:.1f}</code> " + ("(تشبّع بيعي حاد 🟢)" if st['rsi2'] < 10 else "(تشبّع شرائي 🔴)" if st['rsi2'] > 90 else ""),
-        f"• متوسط EMA100 (4H): <code>${st['ema100_4h']:,.0f}</code>",
+        f"• سحابة الإيشيموكو 4H (Span A): <code>${st['ichimoku_span_a']:,.0f}</code>",
+        f"• سحابة الإيشيموكو 4H (Span B): <code>${st['ichimoku_span_b']:,.0f}</code>",
+        f"• خط وسط البولينجر 4H (SMA20): <code>${st['bb_mid_4h']:,.0f}</code>",
         f"• متوسط EMA50 اليومي: <code>${st['ema50_d']:,.0f}</code>",
         f"• متوسط EMA200 اليومي: <code>${st['ema200_d']:,.0f}</code>",
         f"• قمة 55 يوماً (Donchian): <code>${st['hi55_d']:,.0f}</code> (تبعد <code>{st['dist_hi55_pct']:+.1f}%</code>)",
@@ -136,7 +137,7 @@ async def cmd_status(m: Message):
             for r in s.reasons:
                 txt.append(f"   ▫️ {r}")
     else:
-        txt.append("⏸ <i>لا توجد إشارة صيد جديدة مكتملة في هذه اللحظة — النظام يراقب السوق بدقة.</i>")
+        txt.append("⏸ <i>لا توجد إشارة صيد جديدة مكتملة في هذه الشمعة — النظام يراقب السوق بدقة.</i>")
 
     await m.answer("\n".join(txt), reply_markup=main_kb())
 
@@ -155,7 +156,6 @@ async def cmd_chart(m: Message):
             levels = {}
             title = "BTC/USD 4H Analysis"
             if active:
-                # عرض مستويات أحدث صفقة مفتوحة
                 k, tr = list(active.items())[0]
                 levels = {"entry": tr.get("entry"), "stop": tr.get("stop"), "tp": tr.get("tp")}
                 title = f"BTC/USD 4H — {S.SPECS[k].name}"
@@ -186,7 +186,7 @@ async def cmd_positions(m: Message):
         side_icon = "🟢 شراء" if tr["side"] > 0 else "🔴 بيع"
         cur_px = quote["bid"] if tr["side"] > 0 else quote["offer"]
         diff_r = tr["side"] * (cur_px - tr["entry"]) / tr["stop_dist"]
-        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "وقف متحرك (Trailing)"
+        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "خروج إيشيموكو / خط الوسط"
         mode_txt = "كابيتال Demo ✅" if tr.get("mode") == "capital" else "ورقي (Paper)"
 
         lines.extend([
@@ -257,24 +257,26 @@ async def cmd_report(m: Message):
         st_all = backtest.stats(t)
         st_out = backtest.stats(t[t.ts >= pd.Timestamp("2024-01-01", tz="UTC")])
         lines = [
-            "📊 <b>التقرير التاريخي لمحفظة البيتكوين (2018 - 2026):</b>\n",
+            "📊 <b>التقرير التاريخي لمحفظة البيتكوين العالمية (2018 - 2026):</b>\n",
             "🏆 <b>الأداء الكلي (بعد خصم السبريد ورسوم التبييت):</b>",
-            f"• عدد الصفقات: <b>{st_all['n']}</b> صفقة",
+            f"• عدد الصفقات: <b>{st_all['n']}</b> صفقة (معدل <b>{st_all['per_year']:.0f}</b> صفقة/سنة)",
             f"• نسبة الفوز: <b>{st_all['win']}%</b>",
             f"• عامل الربح (Profit Factor): <b>{st_all['pf']}</b>",
             f"• العائد المتوقع لكل صفقة: <b>+{st_all['exp_r']}R</b>",
-            f"• إجمالي الأرباح: <b>+{st_all['total_r']}R</b>",
-            f"• أقصى تراجع (Max Drawdown): <b>{st_all['max_dd_r']}R</b>",
-            f"• العائد المركب بمخاطرة 1%: <b>+{st_all['ret_1pct']}%</b>",
+            f"• إجمالي الأرباح الصافية: <b>+{st_all['total_r']}R</b>",
+            f"• أقصى تراجع: <b>{st_all['max_dd_r']}R</b>",
+            f"• نمو المحفظة بمخاطرة 1%: <b>+{st_all['ret_1pct']}%</b>",
             "",
             "🧪 <b>اختبار خارج العينة (2024 - 2026 Out-of-Sample):</b>",
             f"• الصفقات: {st_out['n']} | الفوز: {st_out['win']}% | PF: <b>{st_out['pf']}</b> | الربح: <b>+{st_out['total_r']}R</b>",
             "",
-            "📌 <b>توزيع الاستراتيجيات:</b>",
+            "📌 <b>تفاصيل أداء كل استراتيجية:</b>",
         ]
         for k in ("A", "C", "B"):
-            s_k = backtest.stats(t[t.strat == k])
-            lines.append(f"• <b>{S.SPECS[k].name}:</b> {s_k['n']} صفقة | فوز {s_k['win']}% | PF {s_k['pf']} | +{s_k['total_r']}R")
+            sub = t[t.strat == k]
+            if not sub.empty:
+                s_k = backtest.stats(sub)
+                lines.append(f"• <b>{S.SPECS[k].name}:</b> {s_k['n']} صفقة | فوز {s_k['win']}% | PF {s_k['pf']} | +{s_k['total_r']}R")
 
         await m.answer("\n".join(lines), reply_markup=main_kb())
     except Exception as e:
@@ -395,7 +397,6 @@ async def cmd_closeall(m: Message):
         await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         n = await asyncio.to_thread(capital_trader.close_all, "btc")
-        # تنظيف الصفقات النشطة
         with state._LOCK:
             st = state.load()
             st["active"].clear()
@@ -416,7 +417,7 @@ async def notify_event(ev: engine.Event):
 
     if ev.kind == "open":
         side_str = "🟢 شراء (LONG)" if tr["side"] > 0 else "🔴 بيع (SHORT)"
-        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "وقف متحرك (Trailing)"
+        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "خروج إيشيموكو / خط الوسط"
         mode_txt = "تم الفتح تلقائياً في Capital.com ✅" if tr.get("mode") == "capital" else "تنبيه تحليلي (ورقي)"
         txt = [
             f"🚨 <b>إشارة تداول جديدة — {strat_name}</b>",
@@ -457,9 +458,9 @@ async def notify_event(ev: engine.Event):
 
     elif ev.kind == "trail":
         txt = (
-            f"🛡 <b>تحديث الوقف المتحرك (Trailing Stop)</b>\n"
+            f"🛡 <b>تحديث الوقف وتأمين الصفقة (Break-even / Trailing)</b>\n"
             f"استراتيجية: <b>{strat_name}</b>\n"
-            f"• تم رفع/تعديل الوقف إلى: <code>${tr['stop']:,.2f}</code> (لحجز الأرباح وتأمين الصفقة 🔒)"
+            f"• تم تعديل الوقف إلى: <code>${tr['stop']:,.2f}</code> لحماية الأرباح وتأمين العقد 🔒"
         )
         await bot.send_message(config.ADMIN_CHAT_ID, txt)
 

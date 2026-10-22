@@ -1,4 +1,4 @@
-"""المحرك المؤسسي للبيتكوين: يفحص الشموع المكتملة (Daily, 4H)، يطلق التوصيات، ينفّذها على Capital.com، ويدير الصفقات بالوقف المتحرك.
+"""المحرك المؤسسي للبيتكوين: يفحص الشموع المكتملة (Daily, 4H)، يطلق التوصيات، ينفّذها على Capital.com، ويدير الصفقات بالوقف وخروج خط الوسط.
 """
 from __future__ import annotations
 
@@ -144,12 +144,14 @@ def _close(k: str, trade: dict, exit_px: float, reason: str, pnl_usd: float | No
     return Event("close", rec)
 
 
-def manage(h4: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
+def manage(h4: pd.DataFrame, d1: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
     events: list[Event] = []
     st = state.load()
     if not st["active"]:
         return events
     h1, _ = markets.candles("1h", 200, ttl=30)
+    s4 = S.signals_4h(h4, d1)
+    last_bb_mid = float(s4["bb_mid"].iloc[-1])
     for k, tr in list(st["active"].items()):
         spec = S.SPECS[k]
         s, opened = tr["side"], pd.Timestamp(tr["opened"])
@@ -172,6 +174,14 @@ def manage(h4: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
                         hit = (tr["tp"], "تحقق الهدف 🎯"); break
                 if hit:
                     events.append(_close(k, tr, float(hit[0]), hit[1]))
+                    continue
+            # خروج استراتيجية B (إيشيموكو): إغلاق شمعة 4H تحت/فوق خط الوسط للبولينجر
+            if k == "B":
+                cur_close = float(h4["close"].iloc[-1])
+                if (s > 0 and cur_close < last_bb_mid) or (s < 0 and cur_close > last_bb_mid):
+                    if tr["mode"] == "capital" and tr.get("dealId"):
+                        capital_trader.close_position(tr["dealId"])
+                    events.append(_close(k, tr, cur_close, "إغلاق سحابة إيشيموكو / خط الوسط"))
                     continue
             if spec.trail_r:
                 bars = h4[h4["ts"] >= opened.floor("4h")]
@@ -216,6 +226,6 @@ def history_stats(hist: list[dict]) -> dict:
 def tick() -> list[Event]:
     t0 = time.time()
     h4, d1, _ = load_data()
-    ev = manage(h4) + scan(h4, d1)
+    ev = manage(h4, d1) + scan(h4, d1)
     log.info("tick %.1fs events=%d", time.time() - t0, len(ev))
     return ev
