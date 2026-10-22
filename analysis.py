@@ -74,6 +74,8 @@ def indicators(df):
         "don55_lo": l.rolling(55).min().shift(1),
         "don20_hi": h.rolling(20).max().shift(1),
         "don20_lo": l.rolling(20).min().shift(1),
+        "don10_hi": h.rolling(10).max().shift(1),
+        "don10_lo": l.rolling(10).min().shift(1),
     }
 
 
@@ -149,37 +151,70 @@ def strategy_signal(df, ind: dict, cfg: dict) -> tuple[float, str, list[str]]:
             return 1.0, "قرب اختراق صاعد — ينقصه تأكيد الحجم", ["السعر يختبر الحد العلوي لبولينجر"]
         return 0.0, "داخل النطاق — انتظار صيدة سيولة", ["لا يوجد كنس سيولة أو اختراق مؤسسي حالياً"]
 
-    if kind in ("smc_ema20_reclaim", "bb_trap_donchian", "macd_ema200"):
+    if kind in ("smc_trend_flow", "smc_ema20_reclaim", "bb_trap_donchian", "macd_ema200"):
         ip2 = i - 2 if len(c) >= 4 else ip
-        lo_p2 = float(ind["bb_lo"].iloc[ip2])
-        up_p2 = float(ind["bb_up"].iloc[ip2])
         e20_p = float(ind["ema20"].iloc[ip])
+        e20_p2 = float(ind["ema20"].iloc[ip2])
+        sw10_hi = float(ind["don10_hi"].iloc[i]) if "don10_hi" in ind and ind["don10_hi"].iloc[i] == ind["don10_hi"].iloc[i] else sw20_hi
+        sw10_lo = float(ind["don10_lo"].iloc[i]) if "don10_lo" in ind and ind["don10_lo"].iloc[i] == ind["don10_lo"].iloc[i] else sw20_lo
+        sw10_hi_p = float(ind["don10_hi"].iloc[ip]) if "don10_hi" in ind and ind["don10_hi"].iloc[ip] == ind["don10_hi"].iloc[ip] else sw20_hi_p
+        sw10_lo_p = float(ind["don10_lo"].iloc[ip]) if "don10_lo" in ind and ind["don10_lo"].iloc[ip] == ind["don10_lo"].iloc[ip] else sw20_lo_p
 
-        recent_swept_lo = (l.iloc[ip] <= lo_p) or (l.iloc[ip2] <= lo_p2) or (l.iloc[ip] < sw20_lo_p)
-        recent_swept_hi = (h.iloc[ip] >= up_p) or (h.iloc[ip2] >= up_p2) or (h.iloc[ip] > sw20_hi_p)
-        cross_up_e20 = c.iloc[i] > e20 and c.iloc[ip] <= e20_p and c.iloc[i] > o.iloc[i]
-        cross_dn_e20 = c.iloc[i] < e20 and c.iloc[ip] >= e20_p and c.iloc[i] < o.iloc[i]
-        bb_trap_up = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > h.iloc[ip] and c.iloc[i] > o.iloc[i] and c.iloc[i] > e200
-        bb_trap_dn = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < l.iloc[ip] and c.iloc[i] < o.iloc[i] and c.iloc[i] < e200
+        bull_trend = c.iloc[i] > e200
+        bear_trend = c.iloc[i] < e200
 
-        if c.iloc[i] > e200 and ((recent_swept_lo and cross_up_e20 and rsi_now < 62) or bb_trap_up):
+        # 1) قنص سيولة 10 شموع (10-Bar Liquidity Sweep & Reclaim)
+        swept_hi_10 = (h.iloc[i] > sw10_hi and c.iloc[i] < sw10_hi and c.iloc[i] < o.iloc[i]) or (
+            h.iloc[ip] > sw10_hi_p and c.iloc[i] < sw10_hi and c.iloc[i] < l.iloc[ip] and c.iloc[i] < o.iloc[i]
+        )
+        swept_lo_10 = (l.iloc[i] < sw10_lo and c.iloc[i] > sw10_lo and c.iloc[i] > o.iloc[i]) or (
+            l.iloc[ip] < sw10_lo_p and c.iloc[i] > sw10_lo and c.iloc[i] > h.iloc[ip] and c.iloc[i] > o.iloc[i]
+        )
+
+        # 2) مصيدة بولينجر (BB Fakeout Reclaim)
+        bb_hi_trap = c.iloc[ip] > up_p and c.iloc[i] < up and c.iloc[i] < o.iloc[i]
+        bb_lo_trap = c.iloc[ip] < lo_p and c.iloc[i] > lo and c.iloc[i] > o.iloc[i]
+
+        # 3) كسر ارتداد EMA20 باتجاه الاتجاه العام (EMA20 Pullback Break)
+        e20_cross_dn = (
+            bear_trend
+            and (h.iloc[ip] >= e20_p or h.iloc[ip2] >= e20_p2)
+            and c.iloc[i] < e20
+            and c.iloc[ip] >= e20_p
+            and c.iloc[i] < l.iloc[ip]
+            and c.iloc[i] < o.iloc[i]
+        )
+        e20_cross_up = (
+            bull_trend
+            and (l.iloc[ip] <= e20_p or l.iloc[ip2] <= e20_p2)
+            and c.iloc[i] > e20
+            and c.iloc[ip] <= e20_p
+            and c.iloc[i] > h.iloc[ip]
+            and c.iloc[i] > o.iloc[i]
+        )
+
+        if bull_trend and (swept_lo_10 or bb_lo_trap or e20_cross_up) and rsi_now < 62:
+            tag = "قنص سيولة القاع (10 شموع)" if swept_lo_10 else ("مصيدة بولينجر السفلية" if bb_lo_trap else "استرداد EMA20 مع الاتجاه")
             return (
                 3.5,
-                "قنص سيولة القاع واسترداد EMA20 مع الاتجاه الصاعد",
-                [f"كنس سيولة القاع ({sw20_lo:,.0f}) ثم إغلاق صاعد فوق EMA20 ({e20:,.0f}) وفوق EMA200"],
+                f"شراء مؤسسي — {tag}",
+                [f"{tag} فوق EMA200 ({e200:,.0f}) مع إغلاق شرائي مؤكد"],
             )
-        if c.iloc[i] < e200 and ((recent_swept_hi and cross_dn_e20 and rsi_now > 38) or bb_trap_dn):
+        if (bear_trend and (swept_hi_10 or bb_hi_trap or e20_cross_dn) and rsi_now > 38) or (
+            (swept_hi_10 or bb_hi_trap) and rsi_prev > 64
+        ):
+            tag = "قنص سيولة القمة (10 شموع)" if swept_hi_10 else ("مصيدة بولينجر العلوية" if bb_hi_trap else "كسر ارتداد EMA20 مع الاتجاه")
             return (
                 -3.5,
-                "قنص سيولة القمة وكسر EMA20 مع الاتجاه الهابط",
-                [f"كنس سيولة القمة ({sw20_hi:,.0f}) ثم إغلاق هابط تحت EMA20 ({e20:,.0f}) وتحت EMA200"],
+                f"بيع مؤسسي — {tag}",
+                [f"{tag} مع رفض بيعي مؤكد داخل النطاق"],
             )
 
-        if c.iloc[i] > e200 and recent_swept_lo:
-            return 1.0, "مراقبة سيولة القاع — بانتظار الإغلاق فوق EMA20", ["تم كنس سيولة القاع — ننتظر شمعة تأكيد تغلق فوق EMA20"]
-        if c.iloc[i] < e200 and recent_swept_hi:
-            return -1.0, "مراقبة سيولة القمة — بانتظار الإغلاق تحت EMA20", ["تم كنس سيولة القمة — ننتظر شمعة تأكيد تغلق تحت EMA20"]
-        return 0.0, "تذبذب محايد — انتظار صيدة مؤكدة", ["لا يوجد كنس سيولة مؤكد بكسر EMA20 مع الاتجاه العام"]
+        if bull_trend and l.iloc[i] <= sw10_lo * 1.002:
+            return 1.0, "مراقبة سيولة القاع — بانتظار شمعة الاسترداد", ["السعر يختبر قاع 10 شموع فوق EMA200"]
+        if bear_trend and h.iloc[i] >= sw10_hi * 0.998:
+            return -1.0, "مراقبة سيولة القمة — بانتظار شمعة الرفض", ["السعر يختبر قمة 10 شموع تحت EMA200"]
+        return 0.0, "تذبذب محايد — انتظار صيدة سيولة", ["لا يوجد كنس سيولة أو كسر ارتداد EMA20 مكتمل"]
 
     return 0.0, "—", []
 
