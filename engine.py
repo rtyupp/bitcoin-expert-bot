@@ -89,8 +89,8 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
 
             if not tr_info.get("moved_be") and initial_risk > 0:
                 floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
-                if floating_gain >= 1.0 * initial_risk:
-                    # نقل الوقف إلى نقطة الدخول
+                # تأمين الوقف مبكراً عند وصول الربح إلى +0.8R
+                if floating_gain >= 0.8 * initial_risk:
                     ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
                     if ok_up:
                         tr_info["moved_be"] = True

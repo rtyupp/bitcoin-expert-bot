@@ -122,8 +122,15 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     d_bear = cur_d1["close"] < cur_d1["ema50"]
 
     # [B] Jesse Ichimoku + Bollinger 4H
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and d_bull
-    jesse_sell = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and d_bear
+    # فلتر التشبع: نمنع الشراء عند قمم التشبع (RSI < 65) والبيع عند قيعان التشبع (RSI > 35)
+    delta4 = h4["close"].diff()
+    gain4 = delta4.clip(lower=0).rolling(14).mean()
+    loss4 = (-delta4.clip(upper=0)).rolling(14).mean()
+    rsi_4h = 100 - (100 / (1 + (gain4 / (loss4 + 1e-9))))
+    cur_rsi = float(rsi_4h.iloc[-1])
+
+    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and d_bull and (cur_rsi < 65.0)
+    jesse_sell = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and d_bear and (cur_rsi > 35.0)
 
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
@@ -164,7 +171,7 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     cur_1h = h1.iloc[-1]
     prev_1h = h1.iloc[-2]
 
-    is_range = cur_1h["adx"] < 22.0
+    is_range = cur_1h["adx"] < 24.0
     range_buy = is_range and (cur_1h["low"] < cur_1h["bb_lower"]) and (cur_1h["close"] > cur_1h["open"]) and (cur_1h["close"] > cur_1h["bb_lower"])
     range_sell = is_range and (cur_1h["high"] > cur_1h["bb_upper"]) and (cur_1h["close"] < cur_1h["open"]) and (cur_1h["close"] < cur_1h["bb_upper"])
 
