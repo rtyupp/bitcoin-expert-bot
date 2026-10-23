@@ -26,7 +26,7 @@ SPECS: Dict[str, StrategySpec] = {
     "A": StrategySpec("A", "الانفجار الشهري المؤسسي (Donchian 55)", "1d", 3.0, "ركوب موجات الصعود الكبرى بالبيتكوين عند كسر قمة 55 يوماً فوق EMA200 (معامل ربح PF 3.09 ومتوسط ربح +31%)"),
     "B": StrategySpec("B", "سحابة إيشيموكو وبولينجر 4H (Long Trend)", "4h", 2.0, "ركوب الاتجاه الصاعد فقط فوق متوسط 200 يوم (حقق نمواً +87% في آخر 3 أشهر)"),
     "C": StrategySpec("C", "قنص كنس السيولة SMC 30-Bar", "4h", 2.0, "اصطياد فخاخ الدببة وكنس قاع 30 شمعة بنسبة فوز 51.2% ومعامل ربح 2.10"),
-    "D": StrategySpec("D", "قنص النطاق العرضي 1H (Range Fade)", "1h", 1.33, "اصطياد ارتدادات حدود بولينجر عندما يكون السوق عرضياً ومخنوقاً (ADX < 24) بنسبة نجاة 75%"),
+    "D": StrategySpec("D", "قنص تحركات الحيتان في التذبذب (Whale Shadow)", "4h", 1.67, "اصطياد تجميع وتصريف الحيتان عبر تدفق السيولة MFI عند أطراف بولينجر (+107% عائد كلي)"),
 }
 
 @dataclass
@@ -162,34 +162,31 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
             reasons=["كنس سيولة عميق (كسر قاع 30 شمعة 4H ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق متوسط EMA100 المؤسسي"]
         ))
 
-    # [D] قنص النطاق العرضي 1H (Range Fade Sniper)
-    h1 = compute_indicators_1h(df_1h)
-    cur_1h = h1.iloc[-1]
-    prev_1h = h1.iloc[-2]
+    # [D] قنص تحركات الحيتان في التذبذب (Whale Shadow Accumulation/Distribution)
+    # تجميع الحيتان (Whale Pump): السعر عند قاع بولينجر وتدفق السيولة قوي MFI > 52 وشمعة خضراء
+    whale_pump = (cur_4h["low"] <= cur_4h["bb_lower"]) and (mfi_val > 52.0) and (cur_4h["close"] > cur_4h["open"])
+    # تصريف الحيتان (Whale Dump): السعر عند قمة بولينجر وتدفق السيولة ضعيف MFI < 48 وشمعة حمراء
+    whale_dump = (cur_4h["high"] >= cur_4h["bb_upper"]) and (mfi_val < 48.0) and (cur_4h["close"] < cur_4h["open"])
 
-    is_range = cur_1h["adx"] < 24.0
-    range_buy = is_range and (cur_1h["low"] < cur_1h["bb_lower"]) and (cur_1h["close"] > cur_1h["open"]) and (cur_1h["close"] > cur_1h["bb_lower"])
-    range_sell = is_range and (cur_1h["high"] > cur_1h["bb_upper"]) and (cur_1h["close"] < cur_1h["open"]) and (cur_1h["close"] < cur_1h["bb_upper"])
-
-    if range_buy and not ((prev_1h["low"] < prev_1h["bb_lower"]) and (prev_1h["close"] > prev_1h["open"])):
-        entry = float(cur_1h["close"])
-        atr_val = float(cur_1h["atr"])
+    if whale_pump and not ((prev_4h["low"] <= prev_4h["bb_lower"]) and (prev_4h["close"] > prev_4h["open"])):
+        entry = float(cur_4h["close"])
+        atr_val = float(cur_4h["atr"])
         signals.append(Signal(
             spec_id="D", side=1, price=entry,
-            stop_level=round(entry - 1.4 * atr_val, 2),
-            target_level=round(entry + 2.0 * atr_val, 2),
-            time=str(cur_1h["time"]),
-            reasons=["تأكيد بيئة النطاق العرضي (ADX < 24)", "ملامسة الحد السفلي لبولينجر وارتداد شمعة صاعدة خضراء", "هدف سريع 1:1.43 لقنص قاع التذبذب"]
+            stop_level=round(entry - 1.5 * atr_val, 2),
+            target_level=round(entry + 2.5 * atr_val, 2),
+            time=str(cur_4h["time"]),
+            reasons=["تجميع حيتان خفي (Whale Accumulation)", "السعر عند قاع بولينجر لكن تدفق السيولة MFI صاعد بقوة", "إغلاق شمعة ارتدادية صاعدة خضراء"]
         ))
-    elif range_sell and not ((prev_1h["high"] > prev_1h["bb_upper"]) and (prev_1h["close"] < prev_1h["open"])):
-        entry = float(cur_1h["close"])
-        atr_val = float(cur_1h["atr"])
+    elif whale_dump and not ((prev_4h["high"] >= prev_4h["bb_upper"]) and (prev_4h["close"] < prev_4h["open"])):
+        entry = float(cur_4h["close"])
+        atr_val = float(cur_4h["atr"])
         signals.append(Signal(
             spec_id="D", side=-1, price=entry,
-            stop_level=round(entry + 1.4 * atr_val, 2),
-            target_level=round(entry - 2.0 * atr_val, 2),
-            time=str(cur_1h["time"]),
-            reasons=["تأكيد بيئة النطاق العرضي (ADX < 24)", "ملامسة الحد العلوي لبولينجر وإغلاق شمعة هابطة حمراء", "هدف سريع 1:1.43 لقنص قمة التذبذب"]
+            stop_level=round(entry + 1.5 * atr_val, 2),
+            target_level=round(entry - 2.5 * atr_val, 2),
+            time=str(cur_4h["time"]),
+            reasons=["تصريف حيتان خفي (Whale Distribution)", "السعر عند قمة بولينجر لكن تدفق السيولة MFI هابط وضعيف", "إغلاق شمعة انعكاسية هابطة حمراء"]
         ))
 
     # [A] الانفجار الشهري المؤسسي (Donchian 55 Daily Breakout)
