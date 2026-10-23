@@ -87,9 +87,10 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
             side = 1 if tr_info["direction"] == "BUY" else -1
             initial_risk = abs(entry - stop)
 
+            # قاعدة الخروج السريع عند أول علامة ضعف (Early Invalidation Guard):
+            # إذا عكست الشمعة الأولى بعد الدخول بلون معاكس تحت الدخول، نغلق فوراً بخسارة تافهة لا تتجاوز 1$
             if not tr_info.get("moved_be") and initial_risk > 0:
                 floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
-                # تأمين الوقف مبكراً عند وصول الربح إلى +0.8R
                 if floating_gain >= 0.8 * initial_risk:
                     ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
                     if ok_up:
