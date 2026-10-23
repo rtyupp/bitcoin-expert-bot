@@ -1,25 +1,20 @@
-"""الإعدادات من متغيرات البيئة."""
+"""إعدادات بوت البيتكوين والتداول عبر Capital.com."""
 import os
 
+# تيليجرام
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-_chat = os.environ.get("DAILY_CHAT_ID", "").strip()
-try:
-    ADMIN_CHAT_ID = int(_chat) if _chat else None
-except ValueError:
-    ADMIN_CHAT_ID = None
+ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "1819077477"))
+DAILY_CHAT_ID = int(os.environ.get("DAILY_CHAT_ID", "1819077477"))
 
-# Capital.com Demo
-CAPITAL_EMAIL = os.environ.get("CAPITAL_EMAIL", "")
-CAPITAL_API_KEY = os.environ.get("CAPITAL_API_KEY", "")
-CAPITAL_API_PASSWORD = os.environ.get("CAPITAL_API_PASSWORD", "")
-
-# الافتراضيات (قابلة للتغيير من البوت وتُحفظ في state.json)
+# Capital.com API
+CAPITAL_EMAIL = os.environ.get("CAPITAL_EMAIL", "lsyry3247@gmail.com")
+CAPITAL_API_KEY = os.environ.get("CAPITAL_API_KEY", "Iw25M1vmcgxt487o")
+CAPITAL_API_PASSWORD = os.environ.get("CAPITAL_API_PASSWORD", "Ali1213141516.")
+CAPITAL_ENV = os.environ.get("CAPITAL_ENV", "demo").lower()  # demo | live
 AUTO_TRADE = os.environ.get("CAPITAL_AUTO_TRADE", "1") == "1"
-RISK_PCT = float(os.environ.get("RISK_PCT", "1.0"))  # مخاطرة كل صفقة % من رصيد كابيتال
 
-# المحرك
-LOOP_SEC = int(os.environ.get("LOOP_SEC", "60"))
-MAX_ENTRY_SLIP_R = 0.5   # تجاهل الإشارة إذا ابتعد السعر أكثر من 0.5R عن سعر الإشارة (تأخر)
-MAX_SIGNAL_AGE_H = 6     # تجاهل إشارة 4h أقدم من 6 ساعات منذ الإغلاق (يومي: 26 ساعة)
-
-STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
+# إدارة الصفقات
+EPIC = "BTCUSD"
+DEFAULT_RISK_PCT = float(os.environ.get("DEFAULT_RISK_PCT", "1.0"))  # 1% لكل صفقة
+MAX_OPEN_POSITIONS = int(os.environ.get("MAX_OPEN_POSITIONS", "1"))
+TRAILING_STOP_ATR_MULT = float(os.environ.get("TRAILING_STOP_ATR_MULT", "2.0"))

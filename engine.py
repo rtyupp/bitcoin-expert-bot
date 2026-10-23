@@ -1,231 +1,147 @@
-"""المحرك المؤسسي للبيتكوين: يفحص الشموع المكتملة (Daily, 4H)، يطلق التوصيات، ينفّذها على Capital.com، ويدير الصفقات بالوقف وخروج خط الوسط.
+"""محرك التداول والمراقبة الدورية للبيتكوين (Trading & Monitoring Engine).
+
+يقوم بالتالي:
+1. جلب الشموع والأسعار المباشرة من Capital.com
+2. فحص إشارات الدخول عبر الاستراتيجيات المؤسسية الأربع المتكيفة (A, B, C, D)
+3. التحقق من عدم وجود صفقات مكررة لنفس الاستراتيجية (One Slot Per Strategy)
+4. حساب حجم العقد بدقة حسب نسبة المخاطرة المحددة (مثلاً 1% من الرصيد المتاح)
+5. إرسال أمر الصفقة مع الوقف والهدف إلى حساب Capital.com
+6. مراقبة الصفقات المفتوحة وتحريك الوقف لنقطة الدخول (Break-Even) عند +1.0R
+7. إرسال تنبيهات تفصيلية وفورية عبر تيليجرام
 """
 from __future__ import annotations
 
 import logging
-import math
 import time
-from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-
-import capital_trader
+from capital_trader import client
 import config
-import markets
 import state
 import strategy as S
 
 log = logging.getLogger("engine")
 
+def calculate_position_size(entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
+    """حساب حجم العقد (بالبيتكوين) بناءً على الرصيد المتاح ونقطة الوقف."""
+    acc = client.get_account_details()
+    if not acc:
+        return 0.0001
 
-@dataclass
-class Event:
-    kind: str          # "open" | "skip" | "close" | "trail" | "error"
-    trade: dict
-    text: str = ""
+    available_balance = acc["available"]
+    risk_amount = available_balance * (risk_pct / 100.0)
+    stop_distance = abs(entry_price - stop_loss_price)
 
+    if stop_distance <= 0:
+        return 0.0001
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame, str]:
-    h4, src = markets.candles("4h", 400)
-    d1, _ = markets.candles("1d", 400)
-    return S.closed_only(h4, "4h"), S.closed_only(d1, "1d"), src
+    # الحجم = المبلغ المعرض للخسارة / مسافة الوقف
+    raw_size = risk_amount / stop_distance
 
+    mkt = client.get_market_info("BTCUSD")
+    min_size = mkt["min_deal_size"] if mkt else 0.0001
+    step = mkt["min_size_increment"] if mkt else 0.0001
 
-def _capital_on() -> bool:
-    return capital_trader.is_configured()
+    size = max(min_size, round(raw_size, 4))
+    return size
 
+def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
+    """فحص السوق وتنفيذ الصفقات المؤكدة تلقائياً إذا كان التداول الآلي مفعلاً."""
+    logs = []
+    actions_taken = []
 
-def live_quote() -> dict:
-    if _capital_on():
-        try:
-            q = capital_trader.live_price("btc")
-            return {"bid": q["bid"], "offer": q["offer"], "src": "capital"}
-        except Exception as e:  # noqa: BLE001
-            log.warning("Capital quote failed: %s", e)
-    t = markets.ticker()
-    return {"bid": t["price"], "offer": t["price"], "src": t["src"].lower()}
+    if not client.is_configured():
+        return [], ["Capital.com غير مربوط في الإعدادات."]
 
+    # جلب البيانات الحية
+    c_1h = client.get_prices("BTCUSD", resolution="HOUR", max_candles=100)
+    c_4h = client.get_prices("BTCUSD", resolution="HOUR_4", max_candles=100)
+    c_1d = client.get_prices("BTCUSD", resolution="DAY", max_candles=100)
 
-def _age_ok(sig: S.Signal, now: pd.Timestamp) -> bool:
-    max_age = pd.Timedelta(hours=26 if sig.spec.tf == "1d" else config.MAX_SIGNAL_AGE_H)
-    step = pd.Timedelta(days=1) if sig.spec.tf == "1d" else pd.Timedelta(hours=4)
-    return now - (sig.bar_ts + step) <= max_age
+    if not c_1h or not c_4h or not c_1d:
+        return [], ["تعذر جلب الشموع الكاملة من خوادم Capital.com."]
 
+    df_1h = pd.DataFrame(c_1h)
+    df_4h = pd.DataFrame(c_4h)
+    df_1d = pd.DataFrame(c_1d)
 
-def _size(balance: float, risk_pct: float, stop_dist: float) -> float:
-    raw = balance * risk_pct / 100.0 / stop_dist
-    return max(0.0001, math.floor(raw * 10_000) / 10_000)
+    # 1. إدارة الصفقات النشطة (Break-Even & Trail)
+    active = state.get_active_trades()
+    open_positions = client.get_open_positions("BTCUSD")
+    open_deal_ids = {p["deal_id"]: p for p in open_positions}
 
+    # التحقق من الصفقات المغلقة لإزالتها من الذاكرة
+    for spec_id, tr_info in list(active.items()):
+        deal_id = tr_info.get("deal_id")
+        if deal_id not in open_deal_ids:
+            # الصفقة أغلقت في المنصة (حققت الهدف أو ضربت الوقف)
+            state.remove_trade(spec_id)
+            logs.append(f"انتهت الصفقة {spec_id} في المنصة وتمت إزالتها من المتابعة.")
+        else:
+            # فحص تأمين الصفقة (Break-Even)
+            pos = open_deal_ids[deal_id]
+            cur_price = pos["current_price"]
+            entry = tr_info["level"]
+            stop = tr_info["stop_level"]
+            side = 1 if tr_info["direction"] == "BUY" else -1
+            initial_risk = abs(entry - stop)
 
-def open_from_signal(sig: S.Signal, now: pd.Timestamp | None = None, quote: dict | None = None) -> Event:
-    now = now or pd.Timestamp.now(tz="UTC")
-    st = state.load()
-    if sig.strategy in st["active"]:
-        return Event("skip", {"strategy": sig.strategy}, "الاستراتيجية لديها صفقة مفتوحة")
-    if not _age_ok(sig, now):
-        return Event("skip", {"strategy": sig.strategy}, "إشارة قديمة")
-    q = quote or live_quote()
-    entry = q["offer"] if sig.side > 0 else q["bid"]
-    basis = 0.0
-    if q["src"] == "capital":
-        try:
-            basis = ((q["bid"] + q["offer"]) / 2) - markets.ticker()["price"]
-        except Exception:  # noqa: BLE001
-            basis = 0.0
-    slip = sig.side * (entry - (sig.ref_price + basis))
-    if slip > config.MAX_ENTRY_SLIP_R * sig.stop_dist:
-        return Event("skip", {"strategy": sig.strategy},
-                     f"السعر ابتعد {slip / sig.stop_dist:.2f}R عن الإشارة — فاتت الفرصة")
-    lv = sig.levels(entry)
-    trade = {
-        "strategy": sig.strategy, "side": sig.side, "bar_ts": str(sig.bar_ts), "opened": str(now),
-        "entry": entry, "stop": lv["stop"], "init_stop": lv["stop"], "tp": lv.get("tp"),
-        "stop_dist": sig.stop_dist, "basis": basis, "best": entry, "reasons": sig.reasons,
-        "mode": "paper", "dealId": None, "size": None, "risk_usd": None,
-    }
-    if _capital_on() and state.auto_trade():
-        try:
-            bal = capital_trader.account_summary()["available"]
-            size = _size(bal, state.risk_pct(), sig.stop_dist)
-            res = capital_trader.open_trade("btc", "BUY" if sig.side > 0 else "SELL", size,
-                                            lv["stop"], lv.get("tp"), allow_multiple=True)
-            trade.update(mode="capital", dealId=res.get("dealId"), size=res["size"],
-                         entry=float(res["level"]), risk_usd=round(res["size"] * sig.stop_dist, 2))
-            if res.get("stopLevel"):
-                trade["stop"] = trade["init_stop"] = float(res["stopLevel"])
-            if res.get("profitLevel"):
-                trade["tp"] = float(res["profitLevel"])
-            trade["best"] = trade["entry"]
-        except Exception as e:  # noqa: BLE001
-            log.exception("فشل فتح الصفقة على Capital")
-            trade["capital_error"] = str(e)[:200]
-    with state._LOCK:
-        st = state.load()
-        st["active"][sig.strategy] = trade
-        state.save(st)
-    return Event("open", trade)
+            if not tr_info.get("moved_be") and initial_risk > 0:
+                floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
+                if floating_gain >= 1.0 * initial_risk:
+                    # نقل الوقف إلى نقطة الدخول
+                    ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
+                    if ok_up:
+                        tr_info["moved_be"] = True
+                        tr_info["stop_level"] = entry
+                        state.record_trade(spec_id, tr_info)
+                        logs.append(f"🔒 تم تأمين الصفقة [{spec_id}] بنجاح بنقل الوقف إلى سعر الدخول ${entry:,.1f}.")
 
+    # 2. فحص إشارات الدخول الجديدة
+    signals = S.scan_signals(df_1h, df_4h, df_1d)
 
-def scan(h4: pd.DataFrame, d1: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
-    now = now or pd.Timestamp.now(tz="UTC")
-    st = state.load()
-    events: list[Event] = []
-    marks = {"A": str(d1["ts"].iloc[-1]), "C": str(h4["ts"].iloc[-1]), "B": str(h4["ts"].iloc[-1])}
-    new = {k for k, v in marks.items() if st["last_bar"].get(k) != v}
-    if not new:
-        return events
-    for sig in S.latest_signals(h4, d1):
-        if sig.strategy in new:
-            try:
-                events.append(open_from_signal(sig, now))
-            except Exception as e:  # noqa: BLE001
-                log.exception("open failed")
-                events.append(Event("error", {"strategy": sig.strategy}, str(e)[:200]))
-    with state._LOCK:
-        st = state.load()
-        for k in new:
-            st["last_bar"][k] = marks[k]
-        state.save(st)
-    return events
+    auto_trade_enabled = state.is_auto_trade()
+    risk_pct = state.get_risk_pct()
 
+    for sig in signals:
+        spec_id = sig.spec_id
+        # التحقق مما إذا كانت الاستراتيجية لديها صفقة مفتوحة بالفعل
+        if spec_id in active:
+            continue
 
-def _close(k: str, trade: dict, exit_px: float, reason: str, pnl_usd: float | None = None) -> Event:
-    r = trade["side"] * (exit_px - trade["entry"]) / trade["stop_dist"]
-    if pnl_usd is not None and trade.get("risk_usd"):
-        r = pnl_usd / trade["risk_usd"]
-    rec = {**trade, "exit": exit_px, "closed": str(pd.Timestamp.now(tz="UTC")), "r": round(r, 2),
-           "reason": reason, "pnl_usd": pnl_usd}
-    with state._LOCK:
-        st = state.load()
-        st["active"].pop(k, None)
-        st["history"].append(rec)
-        st["history"] = st["history"][-300:]
-        state.save(st)
-    return Event("close", rec)
+        direction = "BUY" if sig.side == 1 else "SELL"
+        size = calculate_position_size(sig.price, sig.stop_level, risk_pct)
 
+        trade_record = {
+            "spec_id": spec_id,
+            "strat_name": sig.spec.name,
+            "direction": direction,
+            "entry": sig.price,
+            "stop_level": sig.stop_level,
+            "target_level": sig.target_level,
+            "size": size,
+            "time": sig.time,
+            "reasons": sig.reasons,
+        }
 
-def manage(h4: pd.DataFrame, d1: pd.DataFrame, now: pd.Timestamp | None = None) -> list[Event]:
-    events: list[Event] = []
-    st = state.load()
-    if not st["active"]:
-        return events
-    h1, _ = markets.candles("1h", 200, ttl=30)
-    s4 = S.signals_4h(h4, d1)
-    last_bb_mid = float(s4["bb_mid"].iloc[-1])
-    for k, tr in list(st["active"].items()):
-        spec = S.SPECS[k]
-        s, opened = tr["side"], pd.Timestamp(tr["opened"])
-        try:
-            if tr["mode"] == "capital" and tr.get("dealId"):
-                pos = capital_trader.get_position(tr["dealId"])
-                if pos is None:
-                    pnl = capital_trader.realized_pnl(tr["dealId"])
-                    px = tr["tp"] if (pnl or 0) > 0 and tr.get("tp") else tr["stop"]
-                    events.append(_close(k, tr, float(px), "أُغلقت في Capital.com", pnl))
-                    continue
+        if auto_trade_enabled:
+            ok, msg, deal_data = client.open_position(
+                direction=direction,
+                size=size,
+                epic="BTCUSD",
+                stop_level=sig.stop_level,
+                profit_level=sig.target_level,
+            )
+            if ok and deal_data:
+                state.record_trade(spec_id, deal_data)
+                trade_record["deal_id"] = deal_data.get("deal_id")
+                actions_taken.append(trade_record)
+                logs.append(f"🚀 تم فتح صفقة حقيقية جديدة [{sig.spec.name}] حجم {size} BTC.")
             else:
-                after = h1[h1["ts"] + pd.Timedelta(hours=1) > opened]
-                hit = None
-                for _, b in after.iterrows():
-                    lo, hi = b["low"] + tr["basis"], b["high"] + tr["basis"]
-                    if (s > 0 and lo <= tr["stop"]) or (s < 0 and hi >= tr["stop"]):
-                        hit = (tr["stop"], "ضرب الوقف"); break
-                    if tr.get("tp") and ((s > 0 and hi >= tr["tp"]) or (s < 0 and lo <= tr["tp"])):
-                        hit = (tr["tp"], "تحقق الهدف 🎯"); break
-                if hit:
-                    events.append(_close(k, tr, float(hit[0]), hit[1]))
-                    continue
-            # خروج استراتيجية B (إيشيموكو): إغلاق شمعة 4H تحت/فوق خط الوسط للبولينجر
-            if k == "B":
-                cur_close = float(h4["close"].iloc[-1])
-                if (s > 0 and cur_close < last_bb_mid) or (s < 0 and cur_close > last_bb_mid):
-                    if tr["mode"] == "capital" and tr.get("dealId"):
-                        capital_trader.close_position(tr["dealId"])
-                    events.append(_close(k, tr, cur_close, "إغلاق سحابة إيشيموكو / خط الوسط"))
-                    continue
-            if spec.trail_r:
-                bars = h4[h4["ts"] >= opened.floor("4h")]
-                if len(bars):
-                    ext = (bars["high"].max() if s > 0 else bars["low"].min()) + tr["basis"]
-                    best = max(tr["best"], ext) if s > 0 else min(tr["best"], ext)
-                    ns = S.trail_stop(s, tr["entry"], tr["stop"], tr["stop_dist"], best, spec.trail_r)
-                    if abs(ns - tr["stop"]) >= 0.05 * tr["stop_dist"]:
-                        ok = True
-                        if tr["mode"] == "capital" and tr.get("dealId"):
-                            ok = capital_trader.update_position_levels(tr["dealId"], stop_level=ns,
-                                                                       profit_level=tr.get("tp"), epic="BTCUSD")
-                        if ok:
-                            old = tr["stop"]
-                            with state._LOCK:
-                                cur = state.load()
-                                if k in cur["active"]:
-                                    cur["active"][k].update(stop=ns, best=best)
-                                    state.save(cur)
-                            events.append(Event("trail", {**tr, "stop": ns, "old_stop": old}))
-                    elif best != tr["best"]:
-                        with state._LOCK:
-                            cur = state.load()
-                            if k in cur["active"]:
-                                cur["active"][k]["best"] = best
-                                state.save(cur)
-        except Exception as e:  # noqa: BLE001
-            log.exception("manage %s failed", k)
-            events.append(Event("error", tr, str(e)[:200]))
-    return events
+                logs.append(f"⚠️ تعذر فتح الصفقة تلقائياً: {msg}")
+        else:
+            actions_taken.append(trade_record)
+            logs.append(f"🔔 رصدت إشارة جديدة [{sig.spec.name}] (التداول الآلي معطل).")
 
-
-def history_stats(hist: list[dict]) -> dict:
-    if not hist:
-        return {"n": 0}
-    r = [h["r"] for h in hist]
-    w = [x for x in r if x > 0]; l_ = [-x for x in r if x < 0]
-    return {"n": len(r), "win": round(len(w) / len(r) * 100, 1), "total_r": round(sum(r), 2),
-            "pf": round(sum(w) / sum(l_), 2) if l_ else None}
-
-
-def tick() -> list[Event]:
-    t0 = time.time()
-    h4, d1, _ = load_data()
-    ev = manage(h4, d1) + scan(h4, d1)
-    log.info("tick %.1fs events=%d", time.time() - t0, len(ev))
-    return ev
+    return actions_taken, logs

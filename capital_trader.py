@@ -1,430 +1,355 @@
-"""محرك التداول التلقائي واليدوي على حساب Capital.com التجريبي (Demo REST API).
+"""واجهة متكاملة مع Capital.com REST API.
 
-يدعم:
-- جلب رصيد الحساب والصفقات المفتوحة
-- فتح صفقات شراء/بيع (BUY / SELL) على البيتكوين (BTCUSD) والذهب (GOLD) مع تحديد الوقف والهدف
-- تعديل وقف الخسارة إلى نقطة الدخول (Break-Even) تلقائياً عند وصول الهدف الأول TP1
-- إغلاق الصفقات المفتوحة
-- جلب السعر اللحظي المباشر من Capital.com
+تغطي كامل الإمكانيات:
+- إدارة الجلسة وتخزين التوكن التلقائي (Session Caching)
+- جلب الرصيد والهامش والأرباح الحالية
+- جلب الأسعار اللحظية، الشموع التاريخية، ومشاعر المتداولين (Sentiment)
+- فتح صفقات السوق مع وقف الخسارة والهدف
+- التحقق من تأكيد التنفيذ (Deal Confirmation)
+- تعديل الصفقات (تحريك الوقف / Break-Even / إغلاق الصفقة)
 """
 from __future__ import annotations
 
+import os
+import json
 import logging
 import threading
 import time
-import httpx
-import pandas as pd
+import requests
+from typing import Any, Dict, List, Optional, Tuple
+
 import config
 
-BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
-EPIC_MAP = {
-    "btc": "BTCUSD",
-    "BTC/USDT": "BTCUSD",
-    "BTC/USD": "BTCUSD",
-    "BTCUSD": "BTCUSD",
-    "gold": "GOLD",
-    "PAXG/USDT": "GOLD",
-    "XAU/USD": "GOLD",
-    "GOLD": "GOLD",
+log = logging.getLogger("capital_trader")
+
+_URLS = {
+    "demo": "https://demo-api-capital.backend-capital.com/api/v1",
+    "live": "https://api-capital.backend-capital.com/api/v1",
 }
 
-RESOLUTION_MAP = {
-    "1m": "MINUTE",
-    "5m": "MINUTE_5",
-    "15m": "MINUTE_15",
-    "30m": "MINUTE_30",
-    "1h": "HOUR",
-    "4h": "HOUR_4",
-    "1d": "DAY",
-    "1w": "WEEK",
-}
+_SESSION_FILE = os.path.join(os.path.dirname(__file__), ".session.json")
 
-DEFAULT_SIZES = {
-    "BTCUSD": 0.01,  # 0.01 BTC
-    "GOLD": 0.05,    # 0.05 oz Gold
-}
+class CapitalClient:
+    def __init__(self):
+        self.base_url = _URLS.get(config.CAPITAL_ENV, _URLS["demo"])
+        self.api_key = config.CAPITAL_API_KEY
+        self.email = config.CAPITAL_EMAIL
+        self.password = config.CAPITAL_API_PASSWORD
+        self._cst: Optional[str] = None
+        self._x_security_token: Optional[str] = None
+        self._token_time: float = 0.0
+        self._lock = threading.Lock()
+        self._load_cached_session()
 
-_CLIENT = httpx.Client(timeout=httpx.Timeout(12.0, connect=5.0))
-_AUTH_LOCK = threading.Lock()
-_SESSION: dict[str, str | float] = {"cst": "", "xst": "", "ts": 0.0, "fail_until": 0.0}
-_SESSION_TTL = 540.0  # 9 دقائق
+    def is_configured(self) -> bool:
+        return bool(self.api_key and self.email and self.password)
 
-_PRICE_CACHE: dict[str, tuple[float, dict]] = {}
-_PRICE_TTL = 8.0
-_OHLCV_CACHE: dict[tuple[str, str, int], tuple[float, pd.DataFrame]] = {}
-_OHLCV_TTL = 45.0
+    def _load_cached_session(self):
+        if os.path.exists(_SESSION_FILE):
+            try:
+                with open(_SESSION_FILE, "r") as f:
+                    data = json.load(f)
+                    self._cst = data.get("cst")
+                    self._x_security_token = data.get("xst")
+                    self._token_time = float(data.get("ts", 0.0))
+            except Exception:
+                pass
 
-
-def is_configured() -> bool:
-    return bool(config.CAPITAL_EMAIL and config.CAPITAL_API_KEY and config.CAPITAL_API_PASSWORD)
-
-
-def _epic(asset_or_symbol: str) -> str:
-    return EPIC_MAP.get(asset_or_symbol, EPIC_MAP.get(asset_or_symbol.lower(), "BTCUSD"))
-
-
-def _auth_headers(force: bool = False) -> dict[str, str]:
-    if not is_configured():
-        raise RuntimeError("بيانات حساب Capital.com غير مضبوطة")
-    with _AUTH_LOCK:
-        now = time.time()
-        if not force and _SESSION["cst"] and (now - float(_SESSION["ts"])) < _SESSION_TTL:
-            return {
-                "CST": str(_SESSION["cst"]),
-                "X-SECURITY-TOKEN": str(_SESSION["xst"]),
-                "Content-Type": "application/json",
-            }
-        if now < float(_SESSION.get("fail_until", 0.0)):
-            if _SESSION["cst"]:
-                return {
-                    "CST": str(_SESSION["cst"]),
-                    "X-SECURITY-TOKEN": str(_SESSION["xst"]),
-                    "Content-Type": "application/json",
-                }
-            raise RuntimeError("Capital.com rate-limit cooldown")
-
-        r = _CLIENT.post(
-            f"{BASE_URL}/session",
-            headers={"X-CAP-API-KEY": config.CAPITAL_API_KEY, "Content-Type": "application/json"},
-            json={
-                "identifier": config.CAPITAL_EMAIL,
-                "password": config.CAPITAL_API_PASSWORD,
-                "encryptedPassword": False,
-            },
-        )
-        if r.status_code == 429:
-            _SESSION["fail_until"] = now + 30.0
-            if _SESSION["cst"]:
-                return {
-                    "CST": str(_SESSION["cst"]),
-                    "X-SECURITY-TOKEN": str(_SESSION["xst"]),
-                    "Content-Type": "application/json",
-                }
-        r.raise_for_status()
-        cst = r.headers.get("CST", "")
-        xst = r.headers.get("X-SECURITY-TOKEN", "")
-        if not cst or not xst:
-            raise RuntimeError("فشل الحصول على رموز الجلسة من Capital.com")
-        _SESSION["cst"] = cst
-        _SESSION["xst"] = xst
-        _SESSION["ts"] = now
-        return {"CST": cst, "X-SECURITY-TOKEN": xst, "Content-Type": "application/json"}
-
-
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    headers = _auth_headers(force=False)
-    r = _CLIENT.request(method, f"{BASE_URL}{path}", headers=headers, **kwargs)
-    if r.status_code == 401:
-        headers = _auth_headers(force=True)
-        r = _CLIENT.request(method, f"{BASE_URL}{path}", headers=headers, **kwargs)
-    r.raise_for_status()
-    return r
-
-
-def account_summary() -> dict:
-    """يرجع بيانات الحساب التجريبي + الصفقات المفتوحة."""
-    acc_data = _request("GET", "/accounts").json()
-    accounts = acc_data.get("accounts") or []
-    acc = accounts[0] if accounts else {}
-    bal = acc.get("balance") or {}
-
-    pos_data = _request("GET", "/positions").json()
-    positions = []
-    for item in pos_data.get("positions") or []:
-        p = item.get("position") or {}
-        m = item.get("market") or {}
-        positions.append({
-            "dealId": p.get("dealId"),
-            "epic": m.get("epic"),
-            "name": m.get("instrumentName"),
-            "direction": p.get("direction"),
-            "size": p.get("size"),
-            "level": p.get("level"),
-            "stopLevel": p.get("stopLevel"),
-            "profitLevel": p.get("profitLevel"),
-            "upl": p.get("upl", 0.0),
-            "bid": m.get("bid"),
-            "offer": m.get("offer"),
-        })
-
-    return {
-        "accountId": acc.get("accountId", "—"),
-        "accountName": acc.get("accountName", "Demo"),
-        "balance": float(bal.get("balance", 0.0)),
-        "deposit": float(bal.get("deposit", 0.0)),
-        "profitLoss": float(bal.get("profitLoss", 0.0)),
-        "available": float(bal.get("available", 0.0)),
-        "currency": acc.get("currency", "USD"),
-        "positions": positions,
-    }
-
-
-def has_open_position(asset_or_symbol: str) -> dict | None:
-    """يتحقق هل توجد صفقة مفتوحة فعلياً على هذا الأصل في Capital.com (لمنع تكرار الصفقات)."""
-    epic = _epic(asset_or_symbol)
-    try:
-        pos_data = _request("GET", "/positions").json()
-        for item in pos_data.get("positions") or []:
-            p = item.get("position") or {}
-            m = item.get("market") or {}
-            if m.get("epic") == epic:
-                return {
-                    "dealId": p.get("dealId"),
-                    "epic": epic,
-                    "direction": p.get("direction"),
-                    "size": p.get("size"),
-                    "level": p.get("level"),
-                    "stopLevel": p.get("stopLevel"),
-                    "profitLevel": p.get("profitLevel"),
-                    "upl": p.get("upl", 0.0),
-                }
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def live_price(symbol_or_asset: str) -> dict:
-    """سعر لحظي مباشر من Capital.com (سعر البيع Bid وسعر الشراء Ask كما يظهر في تطبيق الجوال)."""
-    epic = _epic(symbol_or_asset)
-    now = time.time()
-    cached = _PRICE_CACHE.get(epic)
-    if cached and (now - cached[0]) < 2.0:  # كاش ثانيتين فقط لضمان التطابق اللحظي
-        return cached[1]
-
-    data = _request("GET", f"/markets/{epic}").json()
-    snap = data.get("snapshot") or {}
-    bid = float(snap.get("bid") or 0.0)
-    offer = float(snap.get("offer") or bid)
-    # في تطبيق Capital.com على الجوال، السعر الافتراضي المعروض على الشارت والقائمة هو سعر الـ Bid
-    price = bid if bid > 0 else offer
-    if price <= 0:
-        raise RuntimeError(f"Capital.com لم يرجع سعراً لـ {epic}")
-    pct_chg = snap.get("percentageChange")
-    res = {
-        "price": price,
-        "bid": bid,
-        "offer": offer,
-        "mid": (bid + offer) / 2.0 if (bid and offer) else price,
-        "change": float(pct_chg) if pct_chg is not None else None,
-        "high": float(snap.get("high") or 0.0),
-        "low": float(snap.get("low") or 0.0),
-        "ts": now,
-        "exchange": f"Capital.com ({epic})",
-    }
-    _PRICE_CACHE[epic] = (now, res)
-    return res
-
-
-def fetch_ohlcv(symbol_or_asset: str, timeframe: str = "1h", limit: int = 250):
-    """يجلب الشموع التاريخية والحية مباشرة من Capital.com (بسعر Bid المطابق لشارت الجوال)."""
-    epic = _epic(symbol_or_asset)
-    res = RESOLUTION_MAP.get(timeframe, "HOUR")
-    max_bars = min(max(int(limit), 10), 1000)
-    cache_key = (epic, res, max_bars)
-    now = time.time()
-    cached = _OHLCV_CACHE.get(cache_key)
-    if cached and (now - cached[0]) < 15.0:
-        return cached[1].copy(), f"Capital.com ({epic})"
-
-    data = _request("GET", f"/prices/{epic}", params={"resolution": res, "max": max_bars}).json()
-    prices = data.get("prices") or []
-    if not prices:
-        raise RuntimeError(f"Capital.com لم يرجع شموعاً لـ {epic} ({res})")
-
-    def _bid(d: dict | None) -> float:
-        if not d:
-            return 0.0
-        b = d.get("bid")
-        a = d.get("ask")
-        return float(b if b is not None else (a or 0.0))
-
-    rows = []
-    for p in prices:
-        ts_str = p.get("snapshotTimeUTC") or p.get("snapshotTime")
-        op = _bid(p.get("openPrice"))
-        hi = _bid(p.get("highPrice"))
-        lo = _bid(p.get("lowPrice"))
-        cl = _bid(p.get("closePrice"))
-        vol = float(p.get("lastTradedVolume") or 0.0)
-        rows.append((ts_str, op, hi, lo, cl, vol))
-
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
-    df["ts"] = pd.to_datetime(df["ts"])
-    _OHLCV_CACHE[cache_key] = (now, df)
-    return df.copy(), f"Capital.com ({epic})"
-
-
-def open_trade(
-    asset_or_symbol: str,
-    direction: str,
-    size: float | None = None,
-    stop_level: float | None = None,
-    profit_level: float | None = None,
-    allow_multiple: bool = False,
-) -> dict:
-    """يفتح صفقة BUY أو SELL على الحساب التجريبي في Capital.com (يرفض التكرار إذا allow_multiple=False)."""
-    epic = _epic(asset_or_symbol)
-    if not allow_multiple:
-        existing = has_open_position(epic)
-        if existing:
-            return {
-                "ok": False,
-                "already_open": True,
-                "epic": epic,
-                "direction": existing["direction"],
-                "size": existing["size"],
-                "level": existing["level"],
-                "dealId": existing["dealId"],
-            }
-
-    side = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
-    deal_size = float(size) if size and size > 0 else DEFAULT_SIZES.get(epic, 0.01)
-
-    # جلب السعر الحي من Capital لضمان تطابق مستويات الوقف والهدف مع سعر المنصة الفعلي
-    mkt = live_price(epic)
-    ref_price = mkt["offer"] if side == "BUY" else mkt["bid"]
-    decimals = 2 if epic == "GOLD" else 1
-
-    payload: dict = {
-        "epic": epic,
-        "direction": side,
-        "size": deal_size,
-        "guaranteedStop": False,
-        "trailingStop": False,
-    }
-    if stop_level is not None and stop_level > 0:
-        st = round(float(stop_level), decimals)
-        if (side == "BUY" and st < ref_price) or (side == "SELL" and st > ref_price):
-            payload["stopLevel"] = st
-    if profit_level is not None and profit_level > 0:
-        tp = round(float(profit_level), decimals)
-        if (side == "BUY" and tp > ref_price) or (side == "SELL" and tp < ref_price):
-            payload["profitLevel"] = tp
-
-    r = _request("POST", "/positions", json=payload).json()
-    deal_ref = r.get("dealReference", "")
-
-    # تأكيد الصفقة وجلب dealId الفعلي
-    conf = {}
-    if deal_ref:
+    def _save_cached_session(self):
         try:
-            conf = _request("GET", f"/confirms/{deal_ref}").json()
-        except Exception:  # noqa: BLE001
-            logging.exception("تعذّر جلب تأكيد الصفقة %s", deal_ref)
+            with open(_SESSION_FILE, "w") as f:
+                json.dump({
+                    "cst": self._cst,
+                    "xst": self._x_security_token,
+                    "ts": self._token_time
+                }, f)
+        except Exception:
+            pass
 
-    status = conf.get("dealStatus", "ACCEPTED")
-    reason = conf.get("reason", "")
-    if status == "REJECTED":
-        raise RuntimeError(f"رُفض الأمر من Capital.com: {reason}")
+    def _headers(self, with_session: bool = True) -> Dict[str, str]:
+        headers = {
+            "X-CAP-API-KEY": self.api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if with_session and self._cst and self._x_security_token:
+            headers["CST"] = self._cst
+            headers["X-SECURITY-TOKEN"] = self._x_security_token
+        return headers
 
-    # في Capital.com، dealId الخاص بالـ position المفتوحة يكون في affectedDeals
-    deal_id = conf.get("dealId")
-    for ad in conf.get("affectedDeals") or []:
-        if ad.get("status") in ("OPENED", "AMENDED"):
-            deal_id = ad.get("dealId") or deal_id
+    def ensure_session(self, force: bool = False) -> bool:
+        """يضمن وجود جلسة نشطة، ويجددها إذا قاربت على الانتهاء (أكثر من 8 دقائق)."""
+        if not self.is_configured():
+            log.warning("بيانات Capital.com غير مكتملة في الإعدادات.")
+            return False
 
-    return {
-        "ok": True,
-        "epic": epic,
-        "direction": side,
-        "size": deal_size,
-        "level": float(conf.get("level") or ref_price),
-        "dealId": deal_id,
-        "dealReference": deal_ref,
-        "stopLevel": payload.get("stopLevel"),
-        "profitLevel": payload.get("profitLevel"),
-        "status": status,
-    }
+        with self._lock:
+            now = time.time()
+            if not force and self._cst and self._x_security_token and (now - self._token_time < 500):
+                return True
 
+            url = f"{self.base_url}/session"
+            payload = {"identifier": self.email, "password": self.password}
+            try:
+                resp = requests.post(url, json=payload, headers=self._headers(with_session=False), timeout=15)
+                if resp.status_code == 200:
+                    self._cst = resp.headers.get("CST")
+                    self._x_security_token = resp.headers.get("X-SECURITY-TOKEN")
+                    self._token_time = now
+                    self._save_cached_session()
+                    log.info("تم تسجيل الدخول وتحديث جلسة Capital.com بنجاح.")
+                    return True
+                elif resp.status_code == 429 and self._cst and self._x_security_token:
+                    log.warning("طلب الجلسة واجه 429 (Too Many Requests)، استمرار بالتوكن المخزن.")
+                    return True
+                else:
+                    log.error(f"فشل إنشاء جلسة Capital.com: {resp.status_code} - {resp.text}")
+                    return False
+            except Exception as e:
+                log.error(f"خطأ اتصال أثناء فتح جلسة Capital.com: {e}")
+                return False
 
-def update_position_levels(
-    deal_id: str,
-    stop_level: float | None = None,
-    profit_level: float | None = None,
-    epic: str = "BTCUSD",
-) -> bool:
-    """يحدث مستوى وقف الخسارة و/أو الهدف لصفقة قائمة (مثلاً نقل الوقف لنقطة الدخول عند TP1)."""
-    decimals = 2 if epic == "GOLD" else 1
-    body: dict = {"guaranteedStop": False, "trailingStop": False}
-    if stop_level is not None:
-        body["stopLevel"] = round(float(stop_level), decimals)
-    if profit_level is not None:
-        body["profitLevel"] = round(float(profit_level), decimals)
-    try:
-        _request("PUT", f"/positions/{deal_id}", json=body)
-        return True
-    except Exception:  # noqa: BLE001
-        logging.exception("فشل تحديث مستويات الصفقة %s على Capital.com", deal_id)
-        return False
+    def _request(self, method: str, endpoint: str, **kwargs) -> Optional[requests.Response]:
+        if not self.ensure_session():
+            return None
 
+        url = f"{self.base_url}{endpoint}"
+        headers = self._headers(with_session=True)
+        if "headers" in kwargs:
+            headers.update(kwargs.pop("headers"))
 
-def move_stop_to_breakeven(asset_or_symbol: str, entry_price: float | None = None) -> int:
-    """ينقل وقف الخسارة إلى سعر افتتاح الصفقة (Break-Even) لكل الصفقات المفتوحة على هذا الأصل."""
-    epic = _epic(asset_or_symbol)
-    summary = account_summary()
-    updated = 0
-    for pos in summary["positions"]:
-        if pos["epic"] != epic:
-            continue
-        be_level = float(pos["level"]) if pos.get("level") else entry_price
-        if not be_level:
-            continue
-        ok = update_position_levels(
-            pos["dealId"],
-            stop_level=be_level,
-            profit_level=pos.get("profitLevel"),
-            epic=epic,
-        )
-        if ok:
-            updated += 1
-    return updated
+        try:
+            resp = requests.request(method, url, headers=headers, timeout=kwargs.pop("timeout", 15), **kwargs)
+            if resp.status_code == 401:
+                # انتهت الجلسة، نجدد لمرة واحدة
+                log.info("رمز الجلسة منتهي (401)، إعادة تسجيل الدخول...")
+                if self.ensure_session(force=True):
+                    headers = self._headers(with_session=True)
+                    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+            return resp
+        except Exception as e:
+            log.error(f"خطأ أثناء طلب {endpoint}: {e}")
+            return None
 
+    # ── 1. بيانات الحساب ──────────────────────────────────────────
 
-def get_position(deal_id: str) -> dict | None:
-    """يرجع الصفقة المفتوحة بهذا dealId أو None إذا أُغلقت."""
-    pos_data = _request("GET", "/positions").json()
-    for item in pos_data.get("positions") or []:
-        p = item.get("position") or {}
-        if p.get("dealId") == deal_id:
-            m = item.get("market") or {}
-            return {"dealId": deal_id, "epic": m.get("epic"), "direction": p.get("direction"),
-                    "size": p.get("size"), "level": p.get("level"), "stopLevel": p.get("stopLevel"),
-                    "profitLevel": p.get("profitLevel"), "upl": p.get("upl", 0.0),
-                    "bid": m.get("bid"), "offer": m.get("offer")}
-    return None
+    def get_account_details(self) -> Optional[Dict[str, Any]]:
+        """جلب الرصيد، الهامش المتاح، والأرباح/الخسائر العائمة."""
+        resp = self._request("GET", "/accounts")
+        if not resp or resp.status_code != 200:
+            return None
+        data = resp.json()
+        accounts = data.get("accounts", [])
+        if not accounts:
+            return None
+        acc = accounts[0]
+        bal = acc.get("balance", {})
+        return {
+            "account_id": acc.get("accountId"),
+            "account_name": acc.get("accountName"),
+            "status": acc.get("status"),
+            "balance": float(bal.get("balance", 0.0)),
+            "deposit": float(bal.get("deposit", 0.0)),
+            "available": float(bal.get("available", 0.0)),
+            "profit_loss": float(bal.get("profitLoss", 0.0)),
+            "currency": acc.get("currency", "USD"),
+        }
 
+    # ── 2. بيانات السوق والأسعار ─────────────────────────────────
 
-def realized_pnl(deal_id: str, last_period_sec: int = 7 * 86400) -> float | None:
-    """الربح/الخسارة المحققة لصفقة مغلقة (من سجل المعاملات)."""
-    try:
-        j = _request("GET", "/history/transactions", params={"lastPeriod": min(last_period_sec, 2_592_000)}).json()
-    except Exception:  # noqa: BLE001
+    def get_market_info(self, epic: str = config.EPIC) -> Optional[Dict[str, Any]]:
+        """جلب تفاصيل وقواعد التداول والسعر اللحظي للأصل."""
+        resp = self._request("GET", f"/markets/{epic}")
+        if not resp or resp.status_code != 200:
+            return None
+        data = resp.json()
+        inst = data.get("instrument", {})
+        rules = data.get("dealingRules", {})
+        snap = data.get("snapshot", {})
+
+        return {
+            "epic": epic,
+            "name": inst.get("name", epic),
+            "status": snap.get("marketStatus"),
+            "bid": float(snap.get("bid", 0.0)),
+            "offer": float(snap.get("offer", 0.0)),
+            "spread": round(float(snap.get("offer", 0.0)) - float(snap.get("bid", 0.0)), 2),
+            "min_deal_size": float(rules.get("minDealSize", {}).get("value", 0.0001)),
+            "min_size_increment": float(rules.get("minSizeIncrement", {}).get("value", 0.0001)),
+            "min_stop_distance": float(rules.get("minStopOrProfitDistance", {}).get("value", 0.0)),
+            "trailing_stop_available": rules.get("trailingStopsPreference") != "NOT_AVAILABLE",
+        }
+
+    def get_sentiment(self, epic: str = config.EPIC) -> Optional[Dict[str, float]]:
+        """معنويات المتداولين (Sentiment) الحقيقية من Capital.com."""
+        resp = self._request("GET", f"/clientsentiment/{epic}")
+        if not resp or resp.status_code != 200:
+            return None
+        data = resp.json()
+        return {
+            "long_pct": float(data.get("longPositionPercentage", 50.0)),
+            "short_pct": float(data.get("shortPositionPercentage", 50.0)),
+        }
+
+    def get_prices(self, epic: str = config.EPIC, resolution: str = "HOUR_4", max_candles: int = 100) -> List[Dict[str, Any]]:
+        """جلب شموع الأسعار (MINUTE, MINUTE_5, MINUTE_15, HOUR, HOUR_4, DAY)."""
+        resp = self._request("GET", f"/prices/{epic}?resolution={resolution}&max={max_candles}")
+        if not resp or resp.status_code != 200:
+            return []
+        data = resp.json()
+        raw_prices = data.get("prices", [])
+        candles = []
+        for p in raw_prices:
+            # أسعار الإغلاق والافتتاح والمتوسط
+            c = p.get("closePrice", {})
+            o = p.get("openPrice", {})
+            h = p.get("highPrice", {})
+            l = p.get("lowPrice", {})
+            candles.append({
+                "time": p.get("snapshotTime"),
+                "open": float(o.get("bid", 0.0) or o.get("ask", 0.0)),
+                "high": float(h.get("bid", 0.0) or h.get("ask", 0.0)),
+                "low": float(l.get("bid", 0.0) or l.get("ask", 0.0)),
+                "close": float(c.get("bid", 0.0) or c.get("ask", 0.0)),
+                "volume": float(p.get("lastTradedVolume", 1.0)),
+            })
+        return candles
+
+    # ── 3. إدارة وتنفيذ الصفقات ───────────────────────────────────
+
+    def get_open_positions(self, epic: Optional[str] = config.EPIC) -> List[Dict[str, Any]]:
+        """جلب الصفقات المفتوحة حالياً."""
+        resp = self._request("GET", "/positions")
+        if not resp or resp.status_code != 200:
+            return []
+        data = resp.json()
+        items = data.get("positions", [])
+        res = []
+        for item in items:
+            pos = item.get("position", {})
+            mkt = item.get("market", {})
+            if epic and pos.get("epic") != epic:
+                continue
+            res.append({
+                "deal_id": pos.get("dealId"),
+                "epic": pos.get("epic"),
+                "direction": pos.get("direction"),  # BUY | SELL
+                "size": float(pos.get("size", 0.0)),
+                "level": float(pos.get("level", 0.0)),  # entry price
+                "stop_level": float(pos.get("stopLevel") or 0.0),
+                "profit_level": float(pos.get("profitLevel") or 0.0),
+                "upl": float(pos.get("upl", 0.0)),  # Unrealized PnL
+                "created_date": pos.get("createdDate"),
+                "current_price": float(mkt.get("bid", 0.0) if pos.get("direction") == "BUY" else mkt.get("offer", 0.0)),
+            })
+        return res
+
+    def open_position(
+        self,
+        direction: str,
+        size: float,
+        epic: str = config.EPIC,
+        stop_level: Optional[float] = None,
+        profit_level: Optional[float] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """فتح صفقة سوق مع تأكيد التنفيذ."""
+        direction = direction.upper()
+        if direction not in ("BUY", "SELL"):
+            return False, "الاتجاه يجب أن يكون BUY أو SELL", None
+
+        # جلب معلومات السوق للتحقق من الحدود
+        mkt = self.get_market_info(epic)
+        if not mkt:
+            return False, "تعذر جلب معلومات السوق للتأكد من الأسعار", None
+
+        min_deal = mkt["min_deal_size"]
+        if size < min_deal:
+            size = min_deal
+
+        payload: Dict[str, Any] = {
+            "epic": epic,
+            "direction": direction,
+            "size": size,
+            "guaranteedStop": False,
+            "trailingStop": False,
+        }
+
+        if stop_level:
+            payload["stopLevel"] = round(stop_level, 2)
+        if profit_level:
+            payload["profitLevel"] = round(profit_level, 2)
+
+        resp = self._request("POST", "/positions", json=payload)
+        if not resp:
+            return False, "فشل الاتصال بخادم كابيتال لفتح الصفقة", None
+
+        if resp.status_code not in (200, 201):
+            return False, f"رفضت المنصة الأمر ({resp.status_code}): {resp.text}", None
+
+        data = resp.json()
+        deal_ref = data.get("dealReference")
+        if not deal_ref:
+            return False, "لم يتم استلام dealReference من المنصة", None
+
+        # تأكيد التنفيذ عبر GET /confirms/{dealReference}
+        confirm = self._confirm_deal(deal_ref)
+        if confirm and confirm.get("status") == "SUCCESS":
+            affected = confirm.get("affectedDeals", [])
+            real_deal_id = affected[0].get("dealId") if affected else deal_ref
+            return True, f"تم فتح الصفقة بنجاح (معرف: {real_deal_id})", {
+                "deal_id": real_deal_id,
+                "deal_reference": deal_ref,
+                "direction": direction,
+                "size": size,
+                "level": confirm.get("level"),
+                "stop_level": stop_level,
+                "profit_level": profit_level,
+            }
+        else:
+            reason = confirm.get("reason", "UNKNOWN") if confirm else "timeout"
+            return False, f"فشل تأكيد تنفيذ الصفقة في المنصة: {reason}", None
+
+    def _confirm_deal(self, deal_reference: str, max_retries: int = 5) -> Optional[Dict[str, Any]]:
+        """التحقق من حالة تنفيذ الأمر عبر dealReference."""
+        for _ in range(max_retries):
+            time.sleep(0.5)
+            resp = self._request("GET", f"/confirms/{deal_reference}")
+            if resp and resp.status_code == 200:
+                data = resp.json()
+                if data.get("status"):
+                    return data
         return None
-    total, found = 0.0, False
-    for t in j.get("transactions") or []:
-        if t.get("dealId") == deal_id and t.get("transactionType") == "TRADE":
-            total += float(t.get("size") or 0.0)
-            found = True
-    return total if found else None
 
+    def update_position(
+        self,
+        deal_id: str,
+        stop_level: Optional[float] = None,
+        profit_level: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """تعديل وقف الخسارة أو الهدف لصفقة قائمة (Break-Even أو Trailing Stop)."""
+        payload: Dict[str, Any] = {}
+        if stop_level is not None:
+            payload["stopLevel"] = round(stop_level, 2)
+        if profit_level is not None:
+            payload["profitLevel"] = round(profit_level, 2)
 
-def close_position(deal_id: str) -> dict:
-    """يغلق صفقة محددة عبر dealId."""
-    r = _request("DELETE", f"/positions/{deal_id}").json()
-    return {"ok": True, "dealReference": r.get("dealReference")}
+        if not payload:
+            return False, "لا توجد حقول لتعديلها"
 
+        resp = self._request("PUT", f"/positions/{deal_id}", json=payload)
+        if not resp or resp.status_code != 200:
+            msg = resp.text if resp else "لا يوجد استجابة"
+            return False, f"فشل تعديل الصفقة: {msg}"
 
-def close_all(asset_or_symbol: str | None = None) -> int:
-    """يغلق كل الصفقات المفتوحة (أو صفقات أصل معيّن)."""
-    target_epic = _epic(asset_or_symbol) if asset_or_symbol else None
-    summary = account_summary()
-    closed = 0
-    for pos in summary["positions"]:
-        if target_epic and pos["epic"] != target_epic:
-            continue
-        try:
-            close_position(pos["dealId"])
-            closed += 1
-        except Exception:  # noqa: BLE001
-            logging.exception("تعذّر إغلاق الصفقة %s", pos["dealId"])
-    return closed
+        return True, "تم تعديل الصفقة بنجاح"
+
+    def close_position(self, deal_id: str) -> Tuple[bool, str]:
+        """إغلاق صفقة قائمة بالكامل."""
+        resp = self._request("DELETE", f"/positions/{deal_id}")
+        if not resp or resp.status_code != 200:
+            msg = resp.text if resp else "لا يوجد استجابة"
+            return False, f"فشل إغلاق الصفقة: {msg}"
+        return True, "تم إغلاق الصفقة بنجاح"
+
+# كائن مشترك للاستخدام في كافة ملفات المشروع
+client = CapitalClient()

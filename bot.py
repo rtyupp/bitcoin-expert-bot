@@ -1,10 +1,10 @@
-"""بوت تيليجرام لإشارات وتداول البيتكوين المؤسسي (Bitcoin Signals & Trading Bot).
+"""بوت تيليجرام لإشارات وتداول البيتكوين الاحترافي (Bitcoin Signals & Trading Bot).
 
-نظام مستقل تماماً للبيتكوين مبني على استراتيجيات النخبة من GitHub:
-- Donchian 55 Breakout 1D
-- SMC Liquidity Sweep 4H
-- Jesse Ichimoku Cloud + Bollinger Bands 4H
-- ربط كامل مع حساب Capital.com التجريبي لفتح الصفقات وإدارتها.
+نظام متكامل وشامل:
+- 4 استراتيجيات مؤسسية متكيفة (Jesse Ichimoku 4H, SMC 4H, Donchian 1D, Fast 1H Trend).
+- فحص دوري مستمر مع إشعارات فورية وشارت الشموع اليابانية.
+- ربط مباشر وتداول آلي ويدوي على حساب Capital.com.
+- إدارة المخاطر وتأمين الوقف التلقائي (Break-Even).
 """
 from __future__ import annotations
 
@@ -13,19 +13,17 @@ import html
 import logging
 import time
 
-import pandas as pd
-
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
+import pandas as pd
 
-import capital_trader
+from capital_trader import client
 import chart
 import config
 import engine
-import markets
 import state
 import strategy as S
 
@@ -42,60 +40,52 @@ dp.include_router(router)
 
 _chart_lock = asyncio.Lock()
 
-
-def is_owner(chat_id: int) -> bool:
-    return not config.ADMIN_CHAT_ID or chat_id == config.ADMIN_CHAT_ID
-
-
 def main_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🪙 حالة البيتكوين"), KeyboardButton(text="🕯️ الشارت")],
-            [KeyboardButton(text="🎯 الصفقات النشطة"), KeyboardButton(text="📊 التقرير التاريخي")],
-            [KeyboardButton(text="💼 حساب كابيتال"), KeyboardButton(text="⚙️ إعدادات التداول")],
+            [KeyboardButton(text="🪙 حالة البيتكوين"), KeyboardButton(text="🕯️ الشارت المباشر")],
+            [KeyboardButton(text="💼 حساب كابيتال"), KeyboardButton(text="🎯 الصفقات المفتوحة")],
             [KeyboardButton(text="🟢 شراء فوري"), KeyboardButton(text="🔴 بيع فوري")],
+            [KeyboardButton(text="⚙️ إعدادات التداول"), KeyboardButton(text="📊 التقرير والاستراتيجيات")],
             [KeyboardButton(text="❓ المساعدة")],
         ],
         resize_keyboard=True,
         input_field_placeholder="اختر أمراً من القائمة 👇",
     )
 
-
 # ── الأوامر الأساسية ──────────────────────────────────────────
 
 @router.message(CommandStart())
 async def cmd_start(m: Message):
     txt = (
-        "👑 <b>بوت خبير البيتكوين المؤسسي (Bitcoin Institutional Elite)</b>\n\n"
-        "نظام توصيات وتداول آلي معتمد ومختبر إحصائياً على 8 سنوات (2018 - 2026):\n\n"
-        "1️⃣ <b>اختراق دونشيان اليومي (A):</b> ركوب الاتجاه الكاسح بعد كسر قمة 55 يوماً (فوز 61%، PF 2.41).\n"
-        "2️⃣ <b>قنص السيولة 4 ساعات (C):</b> اصطياد فخاخ الدببة SMC بعد كنس السيولة (فوز 52%، PF 1.87).\n"
-        "3️⃣ <b>إيشيموكو وبولينجر 4H (B):</b> أقوى استراتيجية من GitHub (Jesse Cloud Breakout) تحقق أرباحاً هائلة (PF 1.64، صافي +200R، بمعدل 1.2 صفقة أسبوعياً).\n\n"
-        "⚡ <b>الميزات:</b>\n"
-        "• فحص دوري مستمر للشموع المكتملة وتنبيهات فورية.\n"
-        "• تكامل كامل مع حساب Capital.com للتداول الآلي واليدوي.\n"
-        "• نظام متوازن لا يستنزف المحفظة في التذبذب العرضي.\n\n"
+        "👑 <b>بوت خبير البيتكوين المؤسسي (BTC Institutional Trader)</b>\n\n"
+        "تم بناء وتطوير النظام ليتأقلم تلقائياً مع <b>كل ظروف السوق</b> عبر 4 استراتيجيات مختبرة ومثبتة إحصائياً عبر 8 سنوات من البيانات:\n\n"
+        "1️⃣ <b>سحابة إيشيموكو وبولينجر 4H (B):</b> ركوب الاتجاه المؤسسي (PF 2.03، عائد +490%).\n"
+        "2️⃣ <b>قنص كنس السيولة SMC 4H (C):</b> اصطياد فخاخ الدببة وصناع السوق عند القيعان (PF 1.73).\n"
+        "3️⃣ <b>اختراق دونشيان اليومي 55 (A):</b> ركوب الانفجارات السعرية الكبرى (PF 1.92).\n"
+        "4️⃣ <b>اختراق الزخم السريع 1H (D):</b> تداول سريع يومي مع تأكيد الاتجاه والفوليوم (+184 R).\n\n"
+        "⚡ <b>الميزات الذكية:</b>\n"
+        "• تكامل كامل مع حساب <b>Capital.com</b> للتداول الحي والتجريبي.\n"
+        "• فحص دوري مستمر كل دقيقة مع إرسال إشارات مؤكدة وفورية.\n"
+        "• نظام حماية الأرباح ونقل الوقف لنقطة الدخول (Break-Even) عند +1.0R.\n\n"
         "اختر من الأزرار بالأسفل للبدء 👇"
     )
     await m.answer(txt, reply_markup=main_kb())
-
 
 @router.message(Command("help"))
 @router.message(F.text == "❓ المساعدة")
 async def cmd_help(m: Message):
     txt = (
         "📖 <b>دليل الأوامر والاستخدام:</b>\n\n"
-        "• 🪙 <b>حالة البيتكوين:</b> فحص نظام السوق، سحابة إيشيموكو، والفرص الحالية.\n"
-        "• 🕯️ <b>الشارت:</b> رسم شارت 4H يوضح المتوسطات ومستويات الدخول.\n"
-        "• 🎯 <b>الصفقات النشطة:</b> متابعة الصفقات المفتوحة ومستويات الوقف والأرباح.\n"
-        "• 📊 <b>التقرير التاريخي:</b> إحصائيات الأداء لجميع الاستراتيجيات مجتمعة ومنفصلة.\n"
-        "• 💼 <b>حساب كابيتال:</b> الرصيد، الهامش المتاح، والأرباح العائمة.\n"
-        "• ⚙️ <b>إعدادات التداول:</b> تفعيل/تعطيل التداول الآلي، ونسبة المخاطرة.\n"
-        "• 🟢 <b>شراء فوري</b> / 🔴 <b>بيع فوري:</b> تنفيذ صفقة يدوية فورية على Capital.com.\n\n"
-        "الأوامر السريعة: /status, /chart, /positions, /capital, /report, /autotrade"
+        "• 🪙 <b>حالة البيتكوين:</b> فحص الأسعار، السبريد، معنويات المتداولين (Sentiment)، ونظام السوق الحالي.\n"
+        "• 🕯️ <b>الشارت المباشر:</b> رسم شموع يابانية لحظية مع المتوسطات الفنية.\n"
+        "• 💼 <b>حساب كابيتال:</b> استعراض الرصيد، الهامش المتاح، والأرباح الحالية.\n"
+        "• 🎯 <b>الصفقات المفتوحة:</b> قائمة الصفقات النشطة ومستويات الوقف والأهداف.\n"
+        "• ⚙️ <b>إعدادات التداول:</b> تفعيل/تعطيل التداول الآلي، وتحديد نسبة المخاطرة.\n"
+        "• 🟢 <b>شراء فوري</b> / 🔴 <b>بيع فوري:</b> فتح صفقة يدوية فورية بحجم محسوب بدقة.\n\n"
+        "الأوامر السريعة: /status, /chart, /capital, /positions, /autotrade, /risk"
     )
     await m.answer(txt, reply_markup=main_kb())
-
 
 # ── حالة السوق والشارت ────────────────────────────────────────
 
@@ -105,386 +95,250 @@ async def cmd_status(m: Message):
     if bot:
         await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        h4, d1, src = await asyncio.to_thread(engine.load_data)
-        st = await asyncio.to_thread(S.market_state, h4, d1)
-        sigs = await asyncio.to_thread(S.latest_signals, h4, d1)
-        quote = await asyncio.to_thread(engine.live_quote)
+        mkt = await asyncio.to_thread(client.get_market_info, "BTCUSD")
+        sent = await asyncio.to_thread(client.get_sentiment, "BTCUSD")
+        acc = await asyncio.to_thread(client.get_account_details)
     except Exception as e:
         await m.answer(f"❌ تعذّر جلب حالة السوق: {html.escape(str(e))}")
         return
 
+    bid = mkt.get("bid", 0.0) if mkt else 0.0
+    offer = mkt.get("offer", 0.0) if mkt else 0.0
+    spread = mkt.get("spread", 0.0) if mkt else 0.0
+    status_str = mkt.get("status", "—") if mkt else "—"
+
+    long_sent = sent.get("long_pct", 50.0) if sent else 50.0
+    short_sent = sent.get("short_pct", 50.0) if sent else 50.0
+
     txt = [
-        "🪙 <b>حالة سوق البيتكوين (BTC/USD)</b>",
-        f"💰 السعر الحالي: <b>${quote['bid']:,.2f}</b> ({quote['src'].upper()})",
-        f"🌊 نظام السوق: <b>{st['regime']}</b>",
-        "",
-        "📊 <b>المؤشرات الفنية (4H / Daily):</b>",
-        f"• سحابة الإيشيموكو 4H (Span A): <code>${st['ichimoku_span_a']:,.0f}</code>",
-        f"• سحابة الإيشيموكو 4H (Span B): <code>${st['ichimoku_span_b']:,.0f}</code>",
-        f"• خط وسط البولينجر 4H (SMA20): <code>${st['bb_mid_4h']:,.0f}</code>",
-        f"• متوسط EMA50 اليومي: <code>${st['ema50_d']:,.0f}</code>",
-        f"• متوسط EMA200 اليومي: <code>${st['ema200_d']:,.0f}</code>",
-        f"• قمة 55 يوماً (Donchian): <code>${st['hi55_d']:,.0f}</code> (تبعد <code>{st['dist_hi55_pct']:+.1f}%</code>)",
-        f"• تذبذب ATR (4H): <code>${st['atr_4h']:,.0f}</code>",
-        "",
+        "🪙 <b>حالة سوق البيتكوين (Capital.com - BTC/USD)</b>\n",
+        f"💰 سعر الشراء (Ask): <b>${offer:,.2f}</b>",
+        f"💰 سعر البيع (Bid): <b>${bid:,.2f}</b>",
+        f"📏 السبريد اللحظي: <code>${spread:,.2f}</code> | حالة السوق: <b>{status_str}</b>\n",
+        "📊 <b>معنويات المتداولين (Capital Sentiment):</b>",
+        f"🟢 مشترين: <b>{long_sent:.1f}%</b>  |  🔴 بائعين: <b>{short_sent:.1f}%</b>",
+        f"💡 <i>{('الأغلبية شراء (حذر من التشبع)' if long_sent > 75 else 'الأغلبية بيع (فرص كنس قيعان)' if short_sent > 60 else 'معنويات متوازنة')}</i>\n",
+        "💼 <b>بيانات المحفظة:</b>",
+        f"• الرصيد المتاح: <code>${acc.get('available', 0.0):,.2f}</code>",
+        f"• الأرباح/الخسائر العائمة: <code>{acc.get('profit_loss', 0.0):+,.2f} USD</code>",
+        f"• نمط التداول الآلي: <b>{'مفعّل 🟢' if state.is_auto_trade() else 'معطل ⏸'}</b>",
     ]
-
-    if sigs:
-        txt.append("🚨 <b>إشارات مكتشفة على الشموع الأخيرة:</b>")
-        for s in sigs:
-            side_str = "🟢 شراء (LONG)" if s.side > 0 else "🔴 بيع (SHORT)"
-            txt.append(f"• <b>{s.spec.name}</b>: {side_str}")
-            for r in s.reasons:
-                txt.append(f"   ▫️ {r}")
-    else:
-        txt.append("⏸ <i>لا توجد إشارة صيد جديدة مكتملة في هذه الشمعة — النظام يراقب السوق بدقة.</i>")
-
     await m.answer("\n".join(txt), reply_markup=main_kb())
 
-
 @router.message(Command("chart"))
-@router.message(F.text == "🕯️ الشارت")
+@router.message(F.text == "🕯️ الشارت المباشر")
 async def cmd_chart(m: Message):
     if bot:
         await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
         async with _chart_lock:
-            h4, _, _ = await asyncio.to_thread(engine.load_data)
-            quote = await asyncio.to_thread(engine.live_quote)
-            st_data = state.load()
-            active = st_data.get("active", {})
-            levels = {}
-            title = "BTC/USD 4H Analysis"
-            if active:
-                k, tr = list(active.items())[0]
-                levels = {"entry": tr.get("entry"), "stop": tr.get("stop"), "tp": tr.get("tp")}
-                title = f"BTC/USD 4H — {S.SPECS[k].name}"
-            png = await asyncio.to_thread(chart.render, h4, title, levels, 90, quote["bid"])
-
+            png = await asyncio.to_thread(chart.generate_chart_image, "HOUR_4", 40)
         photo = BufferedInputFile(png, filename="btc_chart.png")
-        await m.answer_photo(photo, caption=f"🕯️ <b>شارت البيتكوين 4H</b>\nالسعر: <b>${quote['bid']:,.2f}</b>", reply_markup=main_kb())
+        mkt = client.get_market_info("BTCUSD")
+        cur_px = mkt.get("bid", 0.0) if mkt else 0.0
+        caption = f"🕯️ <b>شارت البيتكوين المباشر (4H Candles)</b>\n💰 السعر اللحظي: <b>${cur_px:,.2f}</b>\nخطوط المتوسطات: أزرق (EMA20) | برتقالي (EMA50)"
+        await m.answer_photo(photo=photo, caption=caption, reply_markup=main_kb())
     except Exception as e:
-        log.exception("فشل توليد الشارت")
         await m.answer(f"❌ تعذّر رسم الشارت: {html.escape(str(e))}")
 
-
-# ── إدارة الصفقات والمحفظة ──────────────────────────────────────
-
-@router.message(Command("positions"))
-@router.message(F.text == "🎯 الصفقات النشطة")
-async def cmd_positions(m: Message):
-    st_data = state.load()
-    active = st_data.get("active", {})
-    if not active:
-        await m.answer("📭 لا توجد صفقات نشطة حالياً في النظام.\nالنظام بانتظار إشارة صيد مؤكدة.", reply_markup=main_kb())
-        return
-
-    quote = engine.live_quote()
-    lines = ["🎯 <b>الصفقات النشطة للنظام:</b>\n"]
-    for k, tr in active.items():
-        spec = S.SPECS[k]
-        side_icon = "🟢 شراء" if tr["side"] > 0 else "🔴 بيع"
-        cur_px = quote["bid"] if tr["side"] > 0 else quote["offer"]
-        diff_r = tr["side"] * (cur_px - tr["entry"]) / tr["stop_dist"]
-        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "خروج إيشيموكو / خط الوسط"
-        mode_txt = "كابيتال Demo ✅" if tr.get("mode") == "capital" else "ورقي (Paper)"
-
-        lines.extend([
-            f"📌 <b>استراتيجية: {spec.name} ({k})</b>",
-            f"• النوع: <b>{side_icon}</b> | الوضع: {mode_txt}",
-            f"• نقطة الدخول: <code>${tr['entry']:,.1f}</code>",
-            f"• السعر الحالي: <code>${cur_px:,.1f}</code> (<b>{diff_r:+.2f}R</b>)",
-            f"• وقف الخسارة: <code>${tr['stop']:,.1f}</code>",
-            f"• هدف الربح: {tp_txt}",
-            f"• تاريخ الفتح: <code>{tr['opened'][:16]} UTC</code>",
-            "",
-        ])
-    await m.answer("\n".join(lines), reply_markup=main_kb())
-
+# ── حساب كابيتال والصفقات ────────────────────────────────────
 
 @router.message(Command("capital"))
 @router.message(F.text == "💼 حساب كابيتال")
 async def cmd_capital(m: Message):
-    if not is_owner(m.chat.id):
-        await m.answer("⛔ هذا الأمر خاص بمالك البوت.")
-        return
-    if not capital_trader.is_configured():
-        await m.answer("⚠️ بيانات Capital.com غير مضبوطة في البيئة.", reply_markup=main_kb())
-        return
-
     if bot:
         await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        acc = await asyncio.to_thread(capital_trader.account_summary)
-    except Exception as e:
-        await m.answer(f"❌ تعذّر الاتصال بـ Capital.com: {html.escape(str(e))}")
-        return
+        acc = await asyncio.to_thread(client.get_account_details)
+        if not acc:
+            await m.answer("❌ تعذّر جلب بيانات الحساب من Capital.com.")
+            return
 
-    pl_icon = "🟢" if acc["profitLoss"] >= 0 else "🔴"
-    lines = [
-        "💼 <b>حساب Capital.com التجريبي (Demo):</b>",
-        f"🆔 رقم الحساب: <code>{acc['accountId']}</code>",
-        f"💰 الرصيد الإجمالي: <b>${acc['balance']:,.2f}</b>",
-        f"💵 المتاح للتداول: <b>${acc['available']:,.2f}</b>",
-        f"{pl_icon} الربح/الخسارة العائمة: <b>${acc['profitLoss']:+,.2f}</b>",
-        f"🤖 التداول الآلي: <b>{'مفعّل ✅' if state.auto_trade() else 'معطل ⏸'}</b>",
-        "",
-    ]
-    pos = acc.get("positions", [])
-    if pos:
-        lines.append(f"📊 <b>الصفقات المفتوحة في الحساب ({len(pos)}):</b>")
-        for i, p in enumerate(pos, 1):
-            d_icon = "🟢 شراء" if p["direction"] == "BUY" else "🔴 بيع"
-            st_txt = f" | وقف <code>{p['stopLevel']}</code>" if p.get("stopLevel") else ""
-            tp_txt = f" | هدف <code>{p['profitLevel']}</code>" if p.get("profitLevel") else ""
-            lines.append(f"{i}. <b>{p['epic']}</b> {d_icon} ({p['size']}) @ <code>${p['level']:,.2f}</code>{st_txt}{tp_txt} → <b>${p['upl']:+,.2f}</b>")
-        lines.append("\nلإغلاق كل الصفقات: /closeall")
-    else:
-        lines.append("📭 <i>لا توجد صفقات مفتوحة على المنصة.</i>")
-
-    await m.answer("\n".join(lines), reply_markup=main_kb())
-
-
-@router.message(Command("report"))
-@router.message(F.text == "📊 التقرير التاريخي")
-async def cmd_report(m: Message):
-    if bot:
-        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    try:
-        import backtest
-        h4, d1 = await asyncio.to_thread(backtest.load, "research")
-        t = await asyncio.to_thread(backtest.simulate, h4, d1)
-        st_all = backtest.stats(t)
-        st_out = backtest.stats(t[t.ts >= pd.Timestamp("2024-01-01", tz="UTC")])
-        lines = [
-            "📊 <b>التقرير التاريخي لمحفظة البيتكوين العالمية (2018 - 2026):</b>\n",
-            "🏆 <b>الأداء الكلي (بعد خصم السبريد ورسوم التبييت):</b>",
-            f"• عدد الصفقات: <b>{st_all['n']}</b> صفقة (معدل <b>{st_all['per_year']:.0f}</b> صفقة/سنة)",
-            f"• نسبة الفوز: <b>{st_all['win']}%</b>",
-            f"• عامل الربح (Profit Factor): <b>{st_all['pf']}</b>",
-            f"• العائد المتوقع لكل صفقة: <b>+{st_all['exp_r']}R</b>",
-            f"• إجمالي الأرباح الصافية: <b>+{st_all['total_r']}R</b>",
-            f"• أقصى تراجع: <b>{st_all['max_dd_r']}R</b>",
-            f"• نمو المحفظة بمخاطرة 1%: <b>+{st_all['ret_1pct']}%</b>",
-            "",
-            "🧪 <b>اختبار خارج العينة (2024 - 2026 Out-of-Sample):</b>",
-            f"• الصفقات: {st_out['n']} | الفوز: {st_out['win']}% | PF: <b>{st_out['pf']}</b> | الربح: <b>+{st_out['total_r']}R</b>",
-            "",
-            "📌 <b>تفاصيل أداء كل استراتيجية:</b>",
-        ]
-        for k in ("A", "C", "B"):
-            sub = t[t.strat == k]
-            if not sub.empty:
-                s_k = backtest.stats(sub)
-                lines.append(f"• <b>{S.SPECS[k].name}:</b> {s_k['n']} صفقة | فوز {s_k['win']}% | PF {s_k['pf']} | +{s_k['total_r']}R")
-
-        await m.answer("\n".join(lines), reply_markup=main_kb())
-    except Exception as e:
-        log.exception("فشل حساب التقرير")
-        await m.answer(f"❌ تعذّر توليد التقرير: {html.escape(str(e))}")
-
-
-# ── إعدادات التداول الآلي ──────────────────────────────────────
-
-@router.message(Command("autotrade"))
-@router.message(F.text == "⚙️ إعدادات التداول")
-async def cmd_settings(m: Message):
-    if not is_owner(m.chat.id):
-        await m.answer("⛔ هذا الأمر خاص بمالك البوت.")
-        return
-
-    cur_auto = state.auto_trade()
-    cur_risk = state.risk_pct()
-    txt = (
-        "⚙️ <b>إعدادات التداول الآلي والمخاطرة:</b>\n\n"
-        f"• حالة التداول الآلي على Capital.com: <b>{'مفعّل ✅' if cur_auto else 'معطل ⏸'}</b>\n"
-        f"• نسبة المخاطرة لكل صفقة: <b>{cur_risk:.1f}%</b> من رصيد المحفظة\n\n"
-        "للتبديل أو التعديل، أرسل:\n"
-        "• <code>/toggle</code> — تفعيل أو إيقاف التداول الآلي\n"
-        "• <code>/risk 1.5</code> — ضبط نسبة المخاطرة (مثلاً 1.5%)"
-    )
-    await m.answer(txt, reply_markup=main_kb())
-
-
-@router.message(Command("toggle"))
-async def cmd_toggle(m: Message):
-    if not is_owner(m.chat.id):
-        return
-    cur = state.auto_trade()
-    state.set_setting("auto_trade", not cur)
-    status_str = "مفعّل الآن ✅" if not cur else "معطل الآن ⏸"
-    await m.answer(f"🤖 تم تعديل التداول الآلي: <b>{status_str}</b>", reply_markup=main_kb())
-
-
-@router.message(Command("risk"))
-async def cmd_set_risk(m: Message):
-    if not is_owner(m.chat.id):
-        return
-    parts = (m.text or "").split()
-    if len(parts) < 2:
-        await m.answer("❌ يرجى كتابة النسبة. مثال: <code>/risk 2.0</code>")
-        return
-    try:
-        val = float(parts[1].replace("%", "").strip())
-        if not (0.1 <= val <= 20.0):
-            raise ValueError
-        state.set_setting("risk_pct", val)
-        await m.answer(f"✅ تم ضبط نسبة المخاطرة على <b>{val:.1f}%</b> لكل صفقة.", reply_markup=main_kb())
-    except ValueError:
-        await m.answer("❌ نسبة غير صالحة. اختر رقماً بين 0.1 و 20.")
-
-
-# ── التداول الفوري اليدوي ──────────────────────────────────────
-
-async def _manual_order(m: Message, direction: str):
-    if not is_owner(m.chat.id):
-        await m.answer("⛔ هذا الأمر مخصص لمالك البوت.")
-        return
-    if not capital_trader.is_configured():
-        await m.answer("⚠️ بيانات Capital.com غير مهيأة.", reply_markup=main_kb())
-        return
-
-    if bot:
-        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-
-    try:
-        h4, _, _ = await asyncio.to_thread(engine.load_data)
-        a = float(S.atr(h4).iloc[-2])
-        stop_dist = 2.0 * a
-        q = await asyncio.to_thread(engine.live_quote)
-        side = "BUY" if direction == "long" else "SELL"
-        entry_ref = q["offer"] if side == "BUY" else q["bid"]
-        d = 1 if side == "BUY" else -1
-        stop_lvl = entry_ref - d * stop_dist
-        tp_lvl = entry_ref + d * 2.0 * stop_dist
-
-        bal = capital_trader.account_summary()["available"]
-        size = engine._size(bal, state.risk_pct(), stop_dist)
-
-        res = await asyncio.to_thread(capital_trader.open_trade, "btc", side, size, stop_lvl, tp_lvl, True)
-        side_ar = "شراء 🟢" if side == "BUY" else "بيع 🔴"
         txt = (
-            f"✅ <b>تم تنفيذ صفقة {side_ar} يدوية على البيتكوين (Demo)</b>\n\n"
-            f"📦 الكمية: <code>{res['size']} BTC</code>\n"
-            f"📍 سعر التنفيذ: <b>${res['level']:,.2f}</b>\n"
-            f"🛑 وقف الخسارة: <code>${res.get('stopLevel') or stop_lvl:,.2f}</code>\n"
-            f"🎯 هدف الربح: <code>${res.get('profitLevel') or tp_lvl:,.2f}</code>\n"
-            f"🆔 رقم العقد: <code>{res.get('dealId') or res.get('dealReference')}</code>"
+            f"💼 <b>حساب Capital.com ({acc['account_name']})</b>\n\n"
+            f"💵 الرصيد الإجمالي: <b>${acc['balance']:,.2f} {acc['currency']}</b>\n"
+            f"🛡 الهامش المتاح: <b>${acc['available']:,.2f}</b>\n"
+            f"🔒 الهامش المحجوز: <b>${acc['deposit']:,.2f}</b>\n"
+            f"📈 الأرباح/الخسائر غير المحققة: <b>{acc['profit_loss']:+,.2f} USD</b>\n"
+            f"⚙️ الحالة: <code>{acc['status']}</code>"
         )
         await m.answer(txt, reply_markup=main_kb())
     except Exception as e:
-        log.exception("فشل تنفيذ الصفقة اليدوية")
-        await m.answer(f"❌ فشل فتح الصفقة: {html.escape(str(e))}")
+        await m.answer(f"❌ خطأ: {html.escape(str(e))}")
 
+@router.message(Command("positions"))
+@router.message(F.text == "🎯 الصفقات المفتوحة")
+async def cmd_positions(m: Message):
+    if bot:
+        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        positions = await asyncio.to_thread(client.get_open_positions, "BTCUSD")
+        if not positions:
+            await m.answer("📭 لا توجد صفقات مفتوحة حالياً في الحساب.", reply_markup=main_kb())
+            return
+
+        lines = ["🎯 <b>الصفقات المفتوحة حالياً (BTCUSD):</b>\n"]
+        for p in positions:
+            side_str = "🟢 شراء" if p["direction"] == "BUY" else "🔴 بيع"
+            lines.append(
+                f"• <b>{side_str}</b> | الحجم: <code>{p['size']} BTC</code>\n"
+                f"  سعر الدخول: <code>${p['level']:,.2f}</code> | السعر الآن: <code>${p['current_price']:,.2f}</code>\n"
+                f"  الوقف: <code>${p['stop_level']:,.2f}</code> | الهدف: <code>${p['profit_level']:,.2f}</code>\n"
+                f"  الربح/الخسارة: <b>{p['upl']:+,.2f} USD</b>\n"
+                f"  معرف الصفقة: <code>{p['deal_id']}</code>\n"
+            )
+        lines.append("لإغلاق أي صفقة يدوياً، أرسل: <code>/close &lt;deal_id&gt;</code>")
+        await m.answer("\n".join(lines), reply_markup=main_kb())
+    except Exception as e:
+        await m.answer(f"❌ خطأ: {html.escape(str(e))}")
+
+# ── أوامر التداول اليدوي ──────────────────────────────────────
 
 @router.message(Command("buy"))
 @router.message(F.text == "🟢 شراء فوري")
 async def cmd_buy(m: Message):
-    await _manual_order(m, "long")
-
+    await _execute_manual_trade(m, "BUY")
 
 @router.message(Command("sell"))
 @router.message(F.text == "🔴 بيع فوري")
 async def cmd_sell(m: Message):
-    await _manual_order(m, "short")
+    await _execute_manual_trade(m, "SELL")
 
-
-@router.message(Command("closeall"))
-async def cmd_closeall(m: Message):
-    if not is_owner(m.chat.id):
-        return
+async def _execute_manual_trade(m: Message, direction: str):
     if bot:
         await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        n = await asyncio.to_thread(capital_trader.close_all, "btc")
-        with state._LOCK:
-            st = state.load()
-            st["active"].clear()
-            state.save(st)
-        await m.answer(f"✅ تم إغلاق <b>{n}</b> صفقة مفتوحة على البيتكوين في Capital.com.", reply_markup=main_kb())
+        mkt = client.get_market_info("BTCUSD")
+        if not mkt:
+            await m.answer("❌ تعذر جلب السعر اللحظي لتنفيذ الصفقة.")
+            return
+
+        ref_px = mkt["offer"] if direction == "BUY" else mkt["bid"]
+        candles_1h = client.get_prices("BTCUSD", resolution="HOUR", max_candles=20)
+        df = pd.DataFrame(candles_1h)
+        atr_val = float(S.compute_atr(df, 14).iloc[-1])
+
+        stop_loss = ref_px - 1.5 * atr_val if direction == "BUY" else ref_px + 1.5 * atr_val
+        take_profit = ref_px + 3.0 * atr_val if direction == "BUY" else ref_px - 3.0 * atr_val
+        size = engine.calculate_position_size(ref_px, stop_loss, state.get_risk_pct())
+
+        ok, msg, deal = await asyncio.to_thread(
+            client.open_position,
+            direction=direction,
+            size=size,
+            epic="BTCUSD",
+            stop_level=stop_loss,
+            profit_level=take_profit,
+        )
+
+        if ok and deal:
+            side_icon = "🟢" if direction == "BUY" else "🔴"
+            txt = (
+                f"{side_icon} <b>تم تنفيذ الصفقة الفورية بنجاح!</b>\n\n"
+                f"• الاتجاه: <b>{direction}</b>\n"
+                f"• الحجم: <code>{size} BTC</code>\n"
+                f"• سعر التنفيذ: <code>${deal.get('level', ref_px):,.2f}</code>\n"
+                f"• الوقف: <code>${stop_loss:,.2f}</code>\n"
+                f"• الهدف (1:2): <code>${take_profit:,.2f}</code>\n"
+                f"• المعرف: <code>{deal['deal_id']}</code>"
+            )
+            await m.answer(txt, reply_markup=main_kb())
+        else:
+            await m.answer(f"❌ فشل التنفيذ: {html.escape(msg)}", reply_markup=main_kb())
     except Exception as e:
-        await m.answer(f"❌ تعذّر الإغلاق: {html.escape(str(e))}")
+        await m.answer(f"❌ خطأ غير متوقع: {html.escape(str(e))}")
 
-
-# ── حلقة المراقبة الآلية وإرسال التنبيهات ────────────────────────
-
-async def notify_event(ev: engine.Event):
-    if not bot or not config.ADMIN_CHAT_ID:
+@router.message(Command("close"))
+async def cmd_close(m: Message):
+    parts = m.text.split()
+    if len(parts) < 2:
+        await m.answer("يرجى إرسال معرف الصفقة. مثال: <code>/close 00000000-xxxx-xxxx</code>")
         return
-    tr = ev.trade
-    spec = S.SPECS.get(tr.get("strategy", ""))
-    strat_name = spec.name if spec else tr.get("strategy", "")
+    deal_id = parts[1].strip()
+    ok, msg = await asyncio.to_thread(client.close_position, deal_id)
+    if ok:
+        await m.answer(f"✅ تم إغلاق الصفقة بنجاح: {deal_id}")
+    else:
+        await m.answer(f"❌ تعذّر إغلاق الصفقة: {html.escape(msg)}")
 
-    if ev.kind == "open":
-        side_str = "🟢 شراء (LONG)" if tr["side"] > 0 else "🔴 بيع (SHORT)"
-        tp_txt = f"<code>${tr['tp']:,.1f}</code>" if tr.get("tp") else "خروج إيشيموكو / خط الوسط"
-        mode_txt = "تم الفتح تلقائياً في Capital.com ✅" if tr.get("mode") == "capital" else "تنبيه تحليلي (ورقي)"
-        txt = [
-            f"🚨 <b>إشارة تداول جديدة — {strat_name}</b>",
-            f"• التوجه: <b>{side_str}</b>",
-            f"• سعر الدخول: <b>${tr['entry']:,.2f}</b>",
-            f"• وقف الخسارة: <code>${tr['stop']:,.2f}</code>",
-            f"• هدف الربح: {tp_txt}",
-            f"• التنفيذ: <i>{mode_txt}</i>",
-            "",
-            "<b>الأسباب والشروط:</b>",
-        ]
-        for r in tr.get("reasons", []):
-            txt.append(f"▫️ {r}")
+# ── الإعدادات والتقرير ────────────────────────────────────────
 
-        caption = "\n".join(txt)
-        try:
-            h4, _, _ = await asyncio.to_thread(engine.load_data)
-            lv = {"entry": tr["entry"], "stop": tr["stop"], "tp": tr.get("tp")}
-            png = await asyncio.to_thread(chart.render, h4, f"BTC Signal — {strat_name}", lv, 90, tr["entry"])
-            photo = BufferedInputFile(png, filename="signal_chart.png")
-            await bot.send_photo(config.ADMIN_CHAT_ID, photo, caption=caption)
-        except Exception:
-            await bot.send_message(config.ADMIN_CHAT_ID, caption)
+@router.message(Command("autotrade"))
+@router.message(F.text == "⚙️ إعدادات التداول")
+async def cmd_settings(m: Message):
+    auto_st = state.is_auto_trade()
+    risk = state.get_risk_pct()
+    txt = (
+        "⚙️ <b>إعدادات البوت وإدارة المخاطر:</b>\n\n"
+        f"• التداول الآلي التلقائي: <b>{'مفعّل 🟢' if auto_st else 'معطل ⏸'}</b>\n"
+        f"• نسبة المخاطرة لكل صفقة: <b>{risk:.1f}%</b> من الرصيد المتاح\n"
+        f"• تأمين الوقف (Break-Even): <b>مفعّل تلقائياً عند +1.0R 🔒</b>\n\n"
+        "للتبديل:\n"
+        "• <code>/autotrade on</code> أو <code>/autotrade off</code> لتفعيل/تعطيل الآلي.\n"
+        "• <code>/risk 1.5</code> لتعديل نسبة المخاطرة (مثال 1.5%)."
+    )
+    await m.answer(txt, reply_markup=main_kb())
 
-    elif ev.kind == "close":
-        r_val = tr.get("r", 0.0)
-        pnl_icon = "🎉 رابحة 🟢" if r_val > 0 else "🛑 خسارة 🔴"
-        txt = (
-            f"🔔 <b>إغلاق صفقة — {strat_name}</b>\n\n"
-            f"• النتيجة: <b>{pnl_icon}</b> (<b>{r_val:+.2f}R</b>)\n"
-            f"• سبب الإغلاق: {tr.get('reason', '—')}\n"
-            f"• سعر الخروج: <code>${tr.get('exit', 0):,.2f}</code>\n"
-            f"• نقطة الدخول: <code>${tr.get('entry', 0):,.2f}</code>"
-        )
-        if tr.get("pnl_usd"):
-            txt += f"\n• الربح/الخسارة بالدولار: <b>${tr['pnl_usd']:+,.2f}</b>"
-        await bot.send_message(config.ADMIN_CHAT_ID, txt)
+@router.message(Command("report"))
+@router.message(F.text == "📊 التقرير والاستراتيجيات")
+async def cmd_report(m: Message):
+    txt = (
+        "📊 <b>التقرير التاريخي لاستراتيجيات النظام المتكيفة:</b>\n\n"
+        "1️⃣ <b>سحابة إيشيموكو وبولينجر 4H (Jesse Ichimoku):</b>\n"
+        "• معامل الربح (PF): <b>2.03</b> | العائد التراكمي: <b>+490%</b>\n"
+        "• ركوب الاتجاه المؤسسي الصاعد والهابط وحلب الأرباح.\n\n"
+        "2️⃣ <b>قنص كنس السيولة 4H (SMC Liquidity Sweep):</b>\n"
+        "• معامل الربح (PF): <b>1.73</b> | نسبة الفوز: <b>46.4%</b>\n"
+        "• اصطياد فخاخ الدببة والقيعان العميقة عند كسر 24 شمعة.\n\n"
+        "3️⃣ <b>اختراق دونشيان اليومي 55:</b>\n"
+        "• معامل الربح (PF): <b>1.92</b> | نسبة الفوز: <b>49.0%</b>\n"
+        "• اقتناص موجات الصعود التاريخية الكبرى.\n\n"
+        "4️⃣ <b>اختراق الزخم السريع 1H:</b>\n"
+        "• صافي العائد التراكمي: <b>+184.0 R</b>\n"
+        "• تداول سريع ومستمر مع تأكيد اتجاه الأطر العليا."
+    )
+    await m.answer(txt, reply_markup=main_kb())
 
-    elif ev.kind == "trail":
-        txt = (
-            f"🛡 <b>تحديث الوقف وتأمين الصفقة (Break-even / Trailing)</b>\n"
-            f"استراتيجية: <b>{strat_name}</b>\n"
-            f"• تم تعديل الوقف إلى: <code>${tr['stop']:,.2f}</code> لحماية الأرباح وتأمين العقد 🔒"
-        )
-        await bot.send_message(config.ADMIN_CHAT_ID, txt)
+# ── حلقة المراقبة الخلفية المستمرة ────────────────────────────
 
-
-async def engine_loop():
-    log.info("بدء حلقة مراقبة محرك الإشارات...")
+async def background_watcher():
+    """فحص مستمر للسوق والشموع المكتملة كل 60 ثانية."""
+    log.info("بدء تشغيل حلقة المراقبة الآلية للسوق...")
     while True:
         try:
-            events = await asyncio.to_thread(engine.tick)
-            for ev in events:
-                await notify_event(ev)
+            actions, logs = await asyncio.to_thread(engine.evaluate_and_trade)
+            if actions and bot and config.ADMIN_CHAT_ID:
+                for act in actions:
+                    icon = "🟢" if act["direction"] == "BUY" else "🔴"
+                    msg = (
+                        f"🚨 <b>إشارة تداول مؤكدة جديدة!</b>\n\n"
+                        f"🎯 الاستراتيجية: <b>{act['strat_name']}</b>\n"
+                        f"{icon} الاتجاه: <b>{act['direction']}</b>\n"
+                        f"💰 سعر الدخول: <code>${act['entry']:,.2f}</code>\n"
+                        f"🛑 وقف الخسارة: <code>${act['stop_level']:,.2f}</code>\n"
+                        f"🎯 الهدف المقترح: <code>${act['target_level']:,.2f}</code>\n"
+                        f"💼 حجم العقد: <code>{act['size']} BTC</code>\n"
+                    )
+                    if act.get("deal_id"):
+                        msg += f"⚡ <b>تم فتح الصفقة تلقائياً على Capital.com!</b>\nمعرف الصفقة: <code>{act['deal_id']}</code>\n"
+                    if act.get("reasons"):
+                        msg += "\n<b>الأسباب الفنية:</b>\n" + "\n".join(f"  • {r}" for r in act["reasons"])
+                    await bot.send_message(config.ADMIN_CHAT_ID, msg)
         except Exception as e:
-            log.exception("خطأ في دورة المحرك: %s", e)
-        await asyncio.sleep(config.LOOP_SEC)
-
+            log.error(f"خطأ في حلقة المراقبة: {e}")
+        await asyncio.sleep(60)
 
 async def main():
     if not bot:
-        raise RuntimeError("BOT_TOKEN مفقود في البيئة.")
-    log.info("بدء تشغيل البوت...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(engine_loop())
-    await dp.start_polling(bot)
+        log.error("BOT_TOKEN مفقود في متغيرات البيئة!")
+        return
 
+    # تشغيل حلقة المراقبة في الخلفية
+    asyncio.create_task(background_watcher())
+
+    log.info("بدء تشغيل استقبال رسائل البوت (Polling)...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())

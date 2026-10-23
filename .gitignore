@@ -8,3 +8,10 @@ venv/
 price_alerts.json
 last_alert.txt
 settings.json
+
+report_cache.json
+tools_*.py
+.session.json
+*.csv
+lab_*.py
+*.log
