@@ -121,9 +121,9 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     d_bull = cur_d1["close"] > cur_d1["ema50"]
     d_bear = cur_d1["close"] < cur_d1["ema50"]
 
-    # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر الحيتان وكفاءة الاتجاه)
+    # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر الحيتان وفلتر معنويات القطيع)
     # السر الأسطوري: منع الشورت في الصعود، ومنع الشراء إذا كان السوق في تذبذب خامل (ER < 0.35) أو تصريف MFI < 50
-    # حساب كفاءة الاتجاه ER
+    # أو إذا كان مؤشر المشاعر يظهر طمع القطيع المفرط (دايفرجنس MFI)
     c_s = h4["close"]
     net_c = abs(c_s - c_s.shift(14))
     noise = abs(c_s - c_s.shift(1)).rolling(14).sum()
@@ -134,9 +134,14 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     raw_m = typ * h4["volume"]
     pos_m = pd.Series(np.where(typ > typ.shift(1), raw_m, 0.0)).rolling(14).sum()
     neg_m = pd.Series(np.where(typ < typ.shift(1), raw_m, 0.0)).rolling(14).sum()
-    mfi_val = float((100 - (100 / (1 + (pos_m / (neg_m + 1e-9))))).iloc[-1])
+    mfi_series = 100 - (100 / (1 + (pos_m / (neg_m + 1e-9))))
+    mfi_val = float(mfi_series.iloc[-1])
 
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (er_val >= 0.35) and (mfi_val >= 50.0)
+    # فلتر الدايفرجنس السلبي: السعر يخترق قمة لكن تدفق السيولة MFI هابط (تصريف حيتان)
+    highest_mfi_20 = float(mfi_series.rolling(20).max().shift(1).iloc[-1])
+    is_mfi_divergence = (cur_4h["close"] > float(h4["high"].rolling(20).max().shift(1).iloc[-1])) and (mfi_val < highest_mfi_20 - 5.0)
+
+    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence)
     
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
