@@ -68,9 +68,9 @@ def compute_indicators_4h(df: pd.DataFrame) -> pd.DataFrame:
     df["span_a"] = ((tenkan + kijun) / 2).shift(26)
     df["span_b"] = ((h.rolling(52).max() + l.rolling(52).min()) / 2).shift(26)
 
-    # SMC 24-Bar Low/High
-    df["lo24"] = l.rolling(24).min().shift(1)
-    df["hi24"] = h.rolling(24).max().shift(1)
+    # SMC 30-Bar Low/High (النافذة الذهبية الأعلى ربحاً)
+    df["lo30"] = l.rolling(30).min().shift(1)
+    df["hi30"] = h.rolling(30).max().shift(1)
 
     return df
 
@@ -153,9 +153,9 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
             reasons=["إغلاق شمعة 4H تحت نطاق بولينجر السفلي", "السعر أسفل سحابة إيشيموكو الهابطة", "تأكيد الاتجاه اليومي الهابط (Close < EMA50)"]
         ))
 
-    # [C] SMC Liquidity Sweep 4H
-    smc_buy = (cur_4h["low"] < cur_4h["lo24"]) and (cur_4h["close"] > cur_4h["lo24"]) and (cur_4h["close"] > cur_4h["open"]) and (cur_4h["close"] > cur_4h["ema100"])
-    if smc_buy and not (prev_4h["low"] < prev_4h["lo24"] and prev_4h["close"] > prev_4h["lo24"]):
+    # [C] SMC Liquidity Sweep 30-bar 4H (النافذة المحسنة PF 2.10)
+    smc_buy = (cur_4h["low"] < cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["open"]) and (cur_4h["close"] > cur_4h["ema100"])
+    if smc_buy and not (prev_4h["low"] < prev_4h["lo30"] and prev_4h["close"] > prev_4h["lo30"]):
         entry = float(cur_4h["close"])
         atr_val = float(cur_4h["atr"])
         signals.append(Signal(
@@ -163,7 +163,7 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
             stop_level=round(entry - 1.5 * atr_val, 2),
             target_level=round(entry + 3.0 * atr_val, 2),
             time=str(cur_4h["time"]),
-            reasons=["كنس سيولة القيعان (كسر قاع 24 شمعة ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق متوسط EMA100 المؤسسي"]
+            reasons=["كنس سيولة عميق (كسر قاع 30 شمعة 4H ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق متوسط EMA100 المؤسسي"]
         ))
 
     # [D] قنص النطاق العرضي 1H (Range Fade Sniper)
@@ -180,20 +180,20 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
         atr_val = float(cur_1h["atr"])
         signals.append(Signal(
             spec_id="D", side=1, price=entry,
-            stop_level=round(entry - 1.5 * atr_val, 2),
+            stop_level=round(entry - 1.4 * atr_val, 2),
             target_level=round(entry + 2.0 * atr_val, 2),
             time=str(cur_1h["time"]),
-            reasons=["تأكيد بيئة النطاق العرضي (ADX < 22)", "ملامسة الحد السفلي لبولينجر وارتداد شمعة صاعدة خضراء", "هدف سريع 1:1.33 لقنص قاع التذبذب"]
+            reasons=["تأكيد بيئة النطاق العرضي (ADX < 24)", "ملامسة الحد السفلي لبولينجر وارتداد شمعة صاعدة خضراء", "هدف سريع 1:1.43 لقنص قاع التذبذب"]
         ))
     elif range_sell and not ((prev_1h["high"] > prev_1h["bb_upper"]) and (prev_1h["close"] < prev_1h["open"])):
         entry = float(cur_1h["close"])
         atr_val = float(cur_1h["atr"])
         signals.append(Signal(
             spec_id="D", side=-1, price=entry,
-            stop_level=round(entry + 1.5 * atr_val, 2),
+            stop_level=round(entry + 1.4 * atr_val, 2),
             target_level=round(entry - 2.0 * atr_val, 2),
             time=str(cur_1h["time"]),
-            reasons=["تأكيد بيئة النطاق العرضي (ADX < 22)", "ملامسة الحد العلوي لبولينجر وإغلاق شمعة هابطة حمراء", "هدف سريع 1:1.33 لقنص قمة التذبذب"]
+            reasons=["تأكيد بيئة النطاق العرضي (ADX < 24)", "ملامسة الحد العلوي لبولينجر وإغلاق شمعة هابطة حمراء", "هدف سريع 1:1.43 لقنص قمة التذبذب"]
         ))
 
     return signals
