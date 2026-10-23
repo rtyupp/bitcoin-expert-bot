@@ -26,7 +26,7 @@ SPECS: Dict[str, StrategySpec] = {
     "A": StrategySpec("A", "اختراق دونشيان اليومي 55", "1d", 2.0, "ركوب الاتجاه المؤسسي الصاعد بعد كسر قمة 55 يوماً بفوليوم عالي"),
     "B": StrategySpec("B", "سحابة إيشيموكو وبولينجر 4H", "4h", 2.0, "اختراق سحابة كومو ونطاق بولينجر العلوي/السفلي مع الاتجاه المؤسسي"),
     "C": StrategySpec("C", "قنص كنس السيولة 4H (SMC)", "4h", 2.0, "اصطياد فخاخ الدببة وكنس قاع 24 شمعة والإغلاق بقوة عكس الكسر"),
-    "D": StrategySpec("D", "اختراق الزخم السريع 1H", "1h", 2.0, "تداول سريع يومي عند كسر قمة/قاع 20 شمعة مع توافق الاتجاه وفوليوم كابيتال"),
+    "D": StrategySpec("D", "قنص النطاق العرضي 1H (Range Fade)", "1h", 1.33, "اصطياد ارتدادات حدود بولينجر عندما يكون السوق عرضياً ومخنوقاً (ADX < 22) بنسبة فوز 66.7%"),
 }
 
 @dataclass
@@ -78,12 +78,22 @@ def compute_indicators_1h(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     c, h, l = df["close"], df["high"], df["low"]
     df["atr"] = compute_atr(df, 14)
-    df["ema20"] = c.ewm(span=20, adjust=False).mean()
-    df["ema50"] = c.ewm(span=50, adjust=False).mean()
-    df["ema200"] = c.ewm(span=200, adjust=False).mean()
-    df["vol_ma"] = df["volume"].rolling(24).mean()
-    df["hi20"] = h.rolling(20).max().shift(1)
-    df["lo20"] = l.rolling(20).min().shift(1)
+
+    # ADX
+    tr = np.maximum(h - l, np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1))))
+    plus_dm = (h - h.shift(1)).clip(lower=0)
+    minus_dm = (l.shift(1) - l).clip(lower=0)
+    tr_14 = tr.rolling(14).sum()
+    plus_di = 100 * (plus_dm.rolling(14).sum() / (tr_14 + 1e-9))
+    minus_di = 100 * (minus_dm.rolling(14).sum() / (tr_14 + 1e-9))
+    dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9))
+    df["adx"] = dx.rolling(14).mean()
+
+    # Bollinger Bands
+    ma20 = c.rolling(20).mean()
+    std20 = c.rolling(20).std()
+    df["bb_upper"] = ma20 + 2.0 * std20
+    df["bb_lower"] = ma20 - 2.0 * std20
     return df
 
 def compute_indicators_1d(df: pd.DataFrame) -> pd.DataFrame:
@@ -149,33 +159,34 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
             reasons=["كنس سيولة القيعان (كسر قاع 24 شمعة ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق متوسط EMA100 المؤسسي"]
         ))
 
-    # [D] اختراق الزخم السريع 1H
+    # [D] قنص النطاق العرضي 1H (Range Fade Sniper)
     h1 = compute_indicators_1h(df_1h)
     cur_1h = h1.iloc[-1]
     prev_1h = h1.iloc[-2]
 
-    fast_buy = (cur_1h["close"] > cur_1h["hi20"]) and (cur_1h["close"] > cur_1h["ema50"]) and (cur_1h["volume"] > 1.3 * cur_1h["vol_ma"]) and d_bull
-    fast_sell = (cur_1h["close"] < cur_1h["lo20"]) and (cur_1h["close"] < cur_1h["ema50"]) and (cur_1h["volume"] > 1.3 * cur_1h["vol_ma"]) and d_bear
+    is_range = cur_1h["adx"] < 22.0
+    range_buy = is_range and (cur_1h["low"] < cur_1h["bb_lower"]) and (cur_1h["close"] > cur_1h["open"]) and (cur_1h["close"] > cur_1h["bb_lower"])
+    range_sell = is_range and (cur_1h["high"] > cur_1h["bb_upper"]) and (cur_1h["close"] < cur_1h["open"]) and (cur_1h["close"] < cur_1h["bb_upper"])
 
-    if fast_buy and not (prev_1h["close"] > prev_1h["hi20"]):
+    if range_buy and not ((prev_1h["low"] < prev_1h["bb_lower"]) and (prev_1h["close"] > prev_1h["open"])):
         entry = float(cur_1h["close"])
         atr_val = float(cur_1h["atr"])
         signals.append(Signal(
             spec_id="D", side=1, price=entry,
             stop_level=round(entry - 1.5 * atr_val, 2),
-            target_level=round(entry + 3.0 * atr_val, 2),
+            target_level=round(entry + 2.0 * atr_val, 2),
             time=str(cur_1h["time"]),
-            reasons=["اختراق قمة 20 شمعة على فريم الساعة", "فوليوم أعلى من المتوسط بـ 30%", "تأكيد الاتجاه اليومي الصاعد"]
+            reasons=["تأكيد بيئة النطاق العرضي (ADX < 22)", "ملامسة الحد السفلي لبولينجر وارتداد شمعة صاعدة خضراء", "هدف سريع 1:1.33 لقنص قاع التذبذب"]
         ))
-    elif fast_sell and not (prev_1h["close"] < prev_1h["lo20"]):
+    elif range_sell and not ((prev_1h["high"] > prev_1h["bb_upper"]) and (prev_1h["close"] < prev_1h["open"])):
         entry = float(cur_1h["close"])
         atr_val = float(cur_1h["atr"])
         signals.append(Signal(
             spec_id="D", side=-1, price=entry,
             stop_level=round(entry + 1.5 * atr_val, 2),
-            target_level=round(entry - 3.0 * atr_val, 2),
+            target_level=round(entry - 2.0 * atr_val, 2),
             time=str(cur_1h["time"]),
-            reasons=["كسر قاع 20 شمعة على فريم الساعة", "فوليوم كابيتال مرتفع", "تأكيد الاتجاه اليومي الهابط"]
+            reasons=["تأكيد بيئة النطاق العرضي (ADX < 22)", "ملامسة الحد العلوي لبولينجر وإغلاق شمعة هابطة حمراء", "هدف سريع 1:1.33 لقنص قمة التذبذب"]
         ))
 
     return signals
