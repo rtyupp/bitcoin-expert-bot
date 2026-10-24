@@ -124,8 +124,7 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     d_bear = cur_d1["close"] < cur_d1["ema50"]
 
     # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر الحيتان وفلتر معنويات القطيع)
-    # السر الأسطوري: منع الشورت في الصعود، ومنع الشراء إذا كان السوق في تذبذب خامل (ER < 0.35) أو تصريف MFI < 50
-    # أو إذا كان مؤشر المشاعر يظهر طمع القطيع المفرط وتصريف الحيتان (Capital Sentiment > 80% أو دايفرجنس MFI)
+    # السر الأسطوري: رفع عتبة قوة الاتجاه الصافي ADX >= 25 لمنع صفقات التذبذب الخامل
     c_s = h4["close"]
     net_c = abs(c_s - c_s.shift(14))
     noise = abs(c_s - c_s.shift(1)).rolling(14).sum()
@@ -139,6 +138,15 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     mfi_series = 100 - (100 / (1 + (pos_m / (neg_m + 1e-9))))
     mfi_val = float(mfi_series.iloc[-1])
 
+    # حساب ADX 4H
+    tr4_s = np.maximum(h4["high"] - h4["low"], np.maximum(abs(h4["high"] - c_s.shift(1)), abs(h4["low"] - c_s.shift(1))))
+    p_dm = (h4["high"] - h4["high"].shift(1)).clip(lower=0)
+    m_dm = (h4["low"].shift(1) - h4["low"]).clip(lower=0)
+    tr_sum = tr4_s.rolling(14).sum()
+    p_di = 100 * (p_dm.rolling(14).sum() / (tr_sum + 1e-9))
+    m_di = 100 * (m_dm.rolling(14).sum() / (tr_sum + 1e-9))
+    adx_4h_val = float((100 * (abs(p_di - m_di) / (p_di + m_di + 1e-9))).rolling(14).mean().iloc[-1])
+
     # فلتر الدايفرجنس السلبي: السعر يخترق قمة لكن تدفق السيولة MFI هابط (تصريف حيتان)
     highest_mfi_20 = float(mfi_series.rolling(20).max().shift(1).iloc[-1])
     is_mfi_divergence = (cur_4h["close"] > float(h4["high"].rolling(20).max().shift(1).iloc[-1])) and (mfi_val < highest_mfi_20 - 5.0)
@@ -147,7 +155,7 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     sent = client.get_sentiment("BTCUSD")
     retail_greed_trap = bool(sent and sent.get("long_pct", 50.0) > 80.0)
 
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
+    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
     
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
