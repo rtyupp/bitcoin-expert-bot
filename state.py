@@ -84,5 +84,30 @@ def remove_trade(spec_id: str):
         del st["active_trades"][spec_id]
         save_state(st)
 
+def close_trade(
+    spec_id: str,
+    reason: str,
+    exit_price: Optional[float] = None,
+    pnl: Optional[float] = None,
+) -> bool:
+    """إغلاق متابعة صفقة وتسجيلها في السجل التاريخي (history)."""
+    st = load_state()
+    tr = st["active_trades"].get(spec_id)
+    if not tr:
+        return False
+    record = {
+        **tr,
+        "exit_reason": reason,
+        "exit_price": exit_price,
+        "pnl": pnl,
+        "closed_at": time.time(),
+    }
+    history = list(st.get("history", []))
+    history.append(record)
+    st["history"] = history[-200:]
+    del st["active_trades"][spec_id]
+    save_state(st)
+    return True
+
 def get_active_trades() -> Dict[str, Any]:
     return load_state().get("active_trades", {})

@@ -6,7 +6,8 @@
 3. التحقق من عدم وجود صفقات مكررة لنفس الاستراتيجية (One Slot Per Strategy)
 4. حساب حجم العقد بدقة حسب نسبة المخاطرة المحددة (مثلاً 1% من الرصيد المتاح)
 5. إرسال أمر الصفقة مع الوقف والهدف إلى حساب Capital.com
-6. مراقبة الصفقات المفتوحة وتحريك الوقف لنقطة الدخول (Break-Even) عند +1.0R
+6. مراقبة الصفقات المفتوحة وتنفيذ قواعد الخروج على الشمعة المغلقة
+   (MA20 لـ[B] وكل البيع، و2×ATR للشراء [A]/[C]/[D]) وتحريك الوقف عند +0.8R
 7. إرسال تنبيهات تفصيلية وفورية عبر تيليجرام
 """
 from __future__ import annotations
@@ -46,6 +47,33 @@ def calculate_position_size(entry_price: float, stop_loss_price: float, risk_pct
     size = max(min_size, round(raw_size, 4))
     return size
 
+def exit_reason_for(
+    spec_id: str,
+    side: int,
+    entry: float,
+    close: float,
+    ma20: float,
+    atr_val: float,
+) -> Optional[str]:
+    """قاعدة الخروج على الشمعة المغلقة، مطابقة لباكتست الـ12 شهراً.
+
+    - [B]: إغلاق 4H ضد اتجاه الصفقة بالنسبة لمتوسط MA20.
+    - [A]/[C]/[D] شراء: إغلاق تحت الدخول بمقدار 2×ATR (وقف تتبعي منطقي).
+    - كل البيع: إغلاق 4H فوق MA20.
+    """
+    if side == 1:
+        if spec_id == "B":
+            if close < ma20:
+                return "إغلاق 4H تحت MA20"
+        elif spec_id in ("A", "C", "D"):
+            if atr_val > 0 and close < entry - 2.0 * atr_val:
+                return "إغلاق تحت الدخول بمقدار 2×ATR"
+    else:
+        if close > ma20:
+            return "إغلاق 4H فوق MA20"
+    return None
+
+
 def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
     """فحص السوق وتنفيذ الصفقات المؤكدة تلقائياً إذا كان التداول الآلي مفعلاً."""
     logs = []
@@ -54,10 +82,10 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
     if not client.is_configured():
         return [], ["Capital.com غير مربوط في الإعدادات."]
 
-    # جلب البيانات الحية
+    # جلب البيانات الحية — 4H و اليومي يحتاجان أكثر من 200 شمعة لتسخين EMA200
     c_1h = client.get_prices("BTCUSD", resolution="HOUR", max_candles=100)
-    c_4h = client.get_prices("BTCUSD", resolution="HOUR_4", max_candles=100)
-    c_1d = client.get_prices("BTCUSD", resolution="DAY", max_candles=100)
+    c_4h = client.get_prices("BTCUSD", resolution="HOUR_4", max_candles=300)
+    c_1d = client.get_prices("BTCUSD", resolution="DAY", max_candles=400)
 
     if not c_1h or not c_4h or not c_1d:
         return [], ["تعذر جلب الشموع الكاملة من خوادم Capital.com."]
@@ -66,7 +94,14 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
     df_4h = pd.DataFrame(c_4h)
     df_1d = pd.DataFrame(c_1d)
 
-    # 1. إدارة الصفقات النشطة (Break-Even & Trail)
+    # مؤشرات الشمعة المغلقة الأخيرة (تستخدم لقرارات الخروج)
+    h4 = S.compute_indicators_4h(df_4h)
+    last_4h = h4.iloc[-1]
+    ma20_val = float(last_4h["ma20"])
+    atr_4h_val = float(last_4h["atr"])
+    last_candle_time = str(last_4h["time"])
+
+    # 1. إدارة الصفقات النشطة (Exit Rules & Break-Even)
     active = state.get_active_trades()
     open_positions = client.get_open_positions("BTCUSD")
     open_deal_ids = {p["deal_id"]: p for p in open_positions}
@@ -76,28 +111,62 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
         deal_id = tr_info.get("deal_id")
         if deal_id not in open_deal_ids:
             # الصفقة أغلقت في المنصة (حققت الهدف أو ضربت الوقف)
-            state.remove_trade(spec_id)
+            state.close_trade(spec_id, reason="أُغلقت في المنصة (هدف/وقف)")
             logs.append(f"انتهت الصفقة {spec_id} في المنصة وتمت إزالتها من المتابعة.")
-        else:
-            # فحص تأمين الصفقة (Break-Even)
-            pos = open_deal_ids[deal_id]
-            cur_price = pos["current_price"]
-            entry = tr_info["level"]
-            stop = tr_info["stop_level"]
-            side = 1 if tr_info["direction"] == "BUY" else -1
-            initial_risk = abs(entry - stop)
+            continue
 
-            # قاعدة الخروج السريع عند أول علامة ضعف (Early Invalidation Guard):
-            # إذا عكست الشمعة الأولى بعد الدخول بلون معاكس تحت الدخول، نغلق فوراً بخسارة تافهة لا تتجاوز 1$
-            if not tr_info.get("moved_be") and initial_risk > 0:
-                floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
-                if floating_gain >= 0.8 * initial_risk:
-                    ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
-                    if ok_up:
-                        tr_info["moved_be"] = True
-                        tr_info["stop_level"] = entry
-                        state.update_trade(spec_id, moved_be=True, stop_level=entry)
-                        logs.append(f"🔒 تم تأمين الصفقة [{spec_id}] بنجاح بنقل الوقف إلى سعر الدخول ${entry:,.1f}.")
+        pos = open_deal_ids[deal_id]
+        cur_price = pos["current_price"]
+        entry = float(tr_info.get("level") or 0.0)
+        stop = float(tr_info.get("stop_level") or 0.0)
+        side = 1 if tr_info["direction"] == "BUY" else -1
+        initial_risk = abs(entry - stop)
+
+        # لا نقيّم الخروج على نفس الشمعة التي دخلنا بها (مطابقة للباكتست)
+        same_candle = tr_info.get("entry_candle") == last_candle_time
+        exit_reason = None if same_candle else exit_reason_for(
+            spec_id, side, entry, float(last_4h["close"]), ma20_val, atr_4h_val
+        )
+
+        if exit_reason:
+            ok_close, msg_close = client.close_position(deal_id)
+            if ok_close:
+                pnl = float(pos.get("upl", 0.0))
+                state.close_trade(
+                    spec_id,
+                    reason=exit_reason,
+                    exit_price=float(last_4h["close"]),
+                    pnl=pnl,
+                )
+                actions_taken.append({
+                    "event": "close",
+                    "spec_id": spec_id,
+                    "strat_name": tr_info.get("strat_name", spec_id),
+                    "direction": tr_info["direction"],
+                    "entry": entry,
+                    "exit_price": float(last_4h["close"]),
+                    "reason": exit_reason,
+                    "pnl": pnl,
+                })
+                logs.append(
+                    f"🚪 إغلاق تلقائي [{spec_id}] — {exit_reason} | "
+                    f"الدخول ${entry:,.1f} → الإغلاق ${float(last_4h['close']):,.1f} | "
+                    f"PnL {pnl:+.2f}$"
+                )
+            else:
+                logs.append(f"⚠️ فشل إغلاق الصفقة [{spec_id}] تلقائياً: {msg_close}")
+            continue
+
+        # فحص تأمين الصفقة (Break-Even)
+        if not tr_info.get("moved_be") and initial_risk > 0:
+            floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
+            if floating_gain >= 0.8 * initial_risk:
+                ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
+                if ok_up:
+                    tr_info["moved_be"] = True
+                    tr_info["stop_level"] = entry
+                    state.update_trade(spec_id, moved_be=True, stop_level=entry)
+                    logs.append(f"🔒 تم تأمين الصفقة [{spec_id}] بنجاح بنقل الوقف إلى سعر الدخول ${entry:,.1f}.")
 
     # 2. فحص إشارات الدخول الجديدة
     signals = S.scan_signals(df_1h, df_4h, df_1d)
@@ -135,6 +204,11 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                 profit_level=sig.target_level,
             )
             if ok and deal_data:
+                deal_data = {
+                    **deal_data,
+                    "strat_name": sig.spec.name,
+                    "entry_candle": sig.time,
+                }
                 state.record_trade(spec_id, deal_data)
                 trade_record["deal_id"] = deal_data.get("deal_id")
                 actions_taken.append(trade_record)

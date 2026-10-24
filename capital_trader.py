@@ -272,11 +272,11 @@ class CapitalClient:
         for item in items:
             pos = item.get("position", {})
             mkt = item.get("market", {})
-            if epic and pos.get("epic") != epic:
+            if epic and mkt.get("epic") != epic:
                 continue
             res.append({
                 "deal_id": pos.get("dealId"),
-                "epic": pos.get("epic"),
+                "epic": mkt.get("epic"),
                 "direction": pos.get("direction"),  # BUY | SELL
                 "size": float(pos.get("size", 0.0)),
                 "level": float(pos.get("level", 0.0)),  # entry price
@@ -337,7 +337,11 @@ class CapitalClient:
 
         # تأكيد التنفيذ عبر GET /confirms/{dealReference}
         confirm = self._confirm_deal(deal_ref)
-        if confirm and confirm.get("status") == "SUCCESS":
+        # Capital.com يرجّع status=OPEN مع dealStatus=ACCEPTED عند النجاح،
+        # وليس status=SUCCESS، لذا نعتمد على dealStatus.
+        deal_status = str(confirm.get("dealStatus", "")).upper() if confirm else ""
+        status = str(confirm.get("status", "")).upper() if confirm else ""
+        if confirm and (deal_status == "ACCEPTED" or status == "SUCCESS"):
             affected = confirm.get("affectedDeals", [])
             real_deal_id = affected[0].get("dealId") if affected else deal_ref
             return True, f"تم فتح الصفقة بنجاح (معرف: {real_deal_id})", {
@@ -350,19 +354,23 @@ class CapitalClient:
                 "profit_level": profit_level,
             }
         else:
-            reason = confirm.get("reason", "UNKNOWN") if confirm else "timeout"
+            reason = (confirm.get("reason") or deal_status or "UNKNOWN") if confirm else "timeout"
             return False, f"فشل تأكيد تنفيذ الصفقة في المنصة: {reason}", None
 
-    def _confirm_deal(self, deal_reference: str, max_retries: int = 5) -> Optional[Dict[str, Any]]:
-        """التحقق من حالة تنفيذ الأمر عبر dealReference."""
+    def _confirm_deal(self, deal_reference: str, max_retries: int = 8) -> Optional[Dict[str, Any]]:
+        """التحقق من حالة تنفيذ الأمر عبر dealReference مع الانتظار حتى القرار النهائي."""
+        last: Optional[Dict[str, Any]] = None
         for _ in range(max_retries):
             time.sleep(0.5)
             resp = self._request("GET", f"/confirms/{deal_reference}")
             if resp and resp.status_code == 200:
                 data = resp.json()
-                if data.get("status"):
+                last = data
+                deal_status = str(data.get("dealStatus", "")).upper()
+                status = str(data.get("status", "")).upper()
+                if deal_status in ("ACCEPTED", "REJECTED") or status == "SUCCESS":
                     return data
-        return None
+        return last
 
     def update_position(
         self,
