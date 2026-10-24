@@ -14,6 +14,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
+from capital_trader import client
+
 @dataclass
 class StrategySpec:
     id: str
@@ -123,7 +125,7 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
 
     # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر الحيتان وفلتر معنويات القطيع)
     # السر الأسطوري: منع الشورت في الصعود، ومنع الشراء إذا كان السوق في تذبذب خامل (ER < 0.35) أو تصريف MFI < 50
-    # أو إذا كان مؤشر المشاعر يظهر طمع القطيع المفرط (دايفرجنس MFI)
+    # أو إذا كان مؤشر المشاعر يظهر طمع القطيع المفرط وتصريف الحيتان (Capital Sentiment > 80% أو دايفرجنس MFI)
     c_s = h4["close"]
     net_c = abs(c_s - c_s.shift(14))
     noise = abs(c_s - c_s.shift(1)).rolling(14).sum()
@@ -141,7 +143,11 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     highest_mfi_20 = float(mfi_series.rolling(20).max().shift(1).iloc[-1])
     is_mfi_divergence = (cur_4h["close"] > float(h4["high"].rolling(20).max().shift(1).iloc[-1])) and (mfi_val < highest_mfi_20 - 5.0)
 
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence)
+    # فلتر استشعار معنويات كابيتال: فحص التضخم المفرط في شراء القطيع
+    sent = client.get_sentiment("BTCUSD")
+    retail_greed_trap = bool(sent and sent.get("long_pct", 50.0) > 80.0)
+
+    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
     
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
