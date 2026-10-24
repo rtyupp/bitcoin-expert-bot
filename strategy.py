@@ -159,8 +159,13 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
 
     # 2. صفقات الهبوط المؤسسي الصريح (Bear Trend Short):
-    # كسر أسفل بولينجر وتحت سحابة كومو وتحت EMA200 مع اتجاه هابط قوي ADX >= 25 وتدفق سيولة سلبي MFI <= 45
-    jesse_short = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and (cur_4h["close"] < cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val <= 45.0)
+    # كسر أسفل بولينجر وتحت سحابة كومو وتحت EMA200 4H مع شرط التوافق اليومي الحاسم (السعر اليومي تحت EMA200 اليومي)
+    # وقوة اتجاه هابطة ADX >= 25 وتدفق سيولة سلبي MFI <= 45
+    cur_d1_close = float(cur_d1["close"])
+    cur_d1_ema200 = float(cur_d1["ema200"])
+    daily_bear_aligned = cur_d1_close < cur_d1_ema200
+
+    jesse_short = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and (cur_4h["close"] < cur_4h["ema200"]) and daily_bear_aligned and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val <= 45.0)
 
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
