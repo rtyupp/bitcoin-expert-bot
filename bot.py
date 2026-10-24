@@ -26,6 +26,7 @@ import config
 import engine
 import state
 import strategy as S
+import whale_intel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("btc-bot")
@@ -98,6 +99,7 @@ async def cmd_status(m: Message):
         mkt = await asyncio.to_thread(client.get_market_info, "BTCUSD")
         sent = await asyncio.to_thread(client.get_sentiment, "BTCUSD")
         acc = await asyncio.to_thread(client.get_account_details)
+        whale_data = await asyncio.to_thread(whale_intel.get_whale_metrics)
     except Exception as e:
         await m.answer(f"❌ تعذّر جلب حالة السوق: {html.escape(str(e))}")
         return
@@ -116,13 +118,25 @@ async def cmd_status(m: Message):
         f"💰 سعر البيع (Bid): <b>${bid:,.2f}</b>",
         f"📏 السبريد اللحظي: <code>${spread:,.2f}</code> | حالة السوق: <b>{status_str}</b>\n",
         "📊 <b>معنويات المتداولين (Capital Sentiment):</b>",
-        f"🟢 مشترين: <b>{long_sent:.1f}%</b>  |  🔴 بائعين: <b>{short_sent:.1f}%</b>",
-        f"💡 <i>{('الأغلبية شراء (حذر من التشبع)' if long_sent > 75 else 'الأغلبية بيع (فرص كنس قيعان)' if short_sent > 60 else 'معنويات متوازنة')}</i>\n",
+        f"🟢 مشترين: <b>{long_sent:.1f}%</b>  |  🔴 بائعين: <b>{short_sent:.1f}%</b>\n",
+    ]
+
+    if whale_data:
+        txt.extend([
+            "🐋 <b>رادار ومراكز سيولة الحيتان المباشرة:</b>",
+            f"• تمركز كبار المتداولين والحيتان: <b>{whale_data['top_long_pct']}% شراء</b> مقابل <b>{whale_data['top_short_pct']}% بيع</b>",
+            f"• تمركز صغار المتداولين والقطيع: <b>{whale_data['retail_long_pct']}% شراء</b>",
+            f"• عقود الحيتان المفتوحة (OI): <code>{whale_data['open_interest_btc']:,.1f} BTC</code>",
+            f"• معدل التمويل (Funding Rate): <code>{whale_data['funding_rate_pct']:+.4f}%</code>",
+            f"• إشارة وسلوك الحيتان الآن: <b>{whale_data['bias']}</b>\n",
+        ])
+
+    txt.extend([
         "💼 <b>بيانات المحفظة:</b>",
         f"• الرصيد المتاح: <code>${acc.get('available', 0.0):,.2f}</code>",
         f"• الأرباح/الخسائر العائمة: <code>{acc.get('profit_loss', 0.0):+,.2f} USD</code>",
         f"• نمط التداول الآلي: <b>{'مفعّل 🟢' if state.is_auto_trade() else 'معطل ⏸'}</b>",
-    ]
+    ])
     await m.answer("\n".join(txt), reply_markup=main_kb())
 
 @router.message(Command("chart"))
