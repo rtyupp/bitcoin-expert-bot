@@ -15,6 +15,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,31 @@ _URLS = {
 }
 
 _SESSION_FILE = os.path.join(os.path.dirname(__file__), ".session.json")
+
+# مدة كل إطار زمني بالثواني (تُستخدم لاستبعاد الشمعة الجارية غير المكتملة)
+_RESOLUTION_SECONDS = {
+    "MINUTE": 60,
+    "MINUTE_5": 300,
+    "MINUTE_15": 900,
+    "MINUTE_30": 1800,
+    "HOUR": 3600,
+    "HOUR_4": 14400,
+    "DAY": 86400,
+    "WEEK": 604800,
+}
+
+
+def _candle_start_utc(value: Any) -> Optional[datetime]:
+    """تحويل snapshotTimeUTC إلى datetime واعٍ بالمنطقة الزمنية (UTC)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 class CapitalClient:
     def __init__(self):
@@ -191,13 +217,26 @@ class CapitalClient:
             "short_pct": float(data.get("shortPositionPercentage", 50.0)),
         }
 
-    def get_prices(self, epic: str = config.EPIC, resolution: str = "HOUR_4", max_candles: int = 100) -> List[Dict[str, Any]]:
-        """جلب شموع الأسعار (MINUTE, MINUTE_5, MINUTE_15, HOUR, HOUR_4, DAY)."""
+    def get_prices(
+        self,
+        epic: str = config.EPIC,
+        resolution: str = "HOUR_4",
+        max_candles: int = 100,
+        closed_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """جلب شموع الأسعار (MINUTE, MINUTE_5, MINUTE_15, HOUR, HOUR_4, DAY).
+
+        closed_only=True يستبعد الشمعة الجارية غير المكتملة حتى لا تُبنى الإشارات
+        على سعر لحظي متغيّر (يطابق منطق الباكتست على شموع مغلقة).
+        """
         resp = self._request("GET", f"/prices/{epic}?resolution={resolution}&max={max_candles}")
         if not resp or resp.status_code != 200:
             return []
         data = resp.json()
         raw_prices = data.get("prices", [])
+        period = _RESOLUTION_SECONDS.get(resolution.upper())
+        now = datetime.now(timezone.utc)
+
         candles = []
         for p in raw_prices:
             # أسعار الإغلاق والافتتاح والمتوسط
@@ -205,8 +244,13 @@ class CapitalClient:
             o = p.get("openPrice", {})
             h = p.get("highPrice", {})
             l = p.get("lowPrice", {})
+            start = _candle_start_utc(p.get("snapshotTimeUTC"))
+            if closed_only and period and start is not None:
+                if start + timedelta(seconds=period) > now:
+                    continue
             candles.append({
                 "time": p.get("snapshotTime"),
+                "time_utc": p.get("snapshotTimeUTC"),
                 "open": float(o.get("bid", 0.0) or o.get("ask", 0.0)),
                 "high": float(h.get("bid", 0.0) or h.get("ask", 0.0)),
                 "low": float(l.get("bid", 0.0) or l.get("ask", 0.0)),

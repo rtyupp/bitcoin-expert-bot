@@ -96,7 +96,7 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                     if ok_up:
                         tr_info["moved_be"] = True
                         tr_info["stop_level"] = entry
-                        state.record_trade(spec_id, tr_info)
+                        state.update_trade(spec_id, moved_be=True, stop_level=entry)
                         logs.append(f"🔒 تم تأمين الصفقة [{spec_id}] بنجاح بنقل الوقف إلى سعر الدخول ${entry:,.1f}.")
 
     # 2. فحص إشارات الدخول الجديدة

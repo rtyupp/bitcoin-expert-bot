@@ -64,9 +64,19 @@ def record_trade(spec_id: str, deal_data: Dict[str, Any]):
         **deal_data,
         "spec_id": spec_id,
         "timestamp": time.time(),
-        "moved_be": False,
+        "moved_be": bool(deal_data.get("moved_be", False)),
     }
     save_state(st)
+
+def update_trade(spec_id: str, **fields) -> bool:
+    """تحديث حقول صفقة قائمة دون المساس ببقية الحقول (مثل moved_be)."""
+    st = load_state()
+    tr = st["active_trades"].get(spec_id)
+    if not tr:
+        return False
+    tr.update(fields)
+    save_state(st)
+    return True
 
 def remove_trade(spec_id: str):
     st = load_state()

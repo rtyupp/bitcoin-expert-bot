@@ -13,7 +13,7 @@ from capital_trader import client
 
 def generate_chart_image(resolution: str = "HOUR_4", num_candles: int = 40) -> bytes:
     """بناء صورة PNG لرسم الشموع اليابانية والمتوسطات الفنية مباشرة من كابيتال."""
-    candles = client.get_prices("BTCUSD", resolution=resolution, max_candles=num_candles)
+    candles = client.get_prices("BTCUSD", resolution=resolution, max_candles=num_candles, closed_only=False)
     if not candles:
         # شارت فارغ في حال تعذر الاتصال
         fig, ax = plt.subplots(figsize=(8, 4))
