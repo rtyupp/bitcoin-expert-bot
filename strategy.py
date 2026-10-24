@@ -155,8 +155,13 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     sent = client.get_sentiment("BTCUSD")
     retail_greed_trap = bool(sent and sent.get("long_pct", 50.0) > 80.0)
 
+    # 1. صفقات الترند المؤسسي الصاعد (Jesse Bull)
     jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
-    
+
+    # 2. صفقات الهبوط المؤسسي الصريح (Bear Trend Short):
+    # كسر أسفل بولينجر وتحت سحابة كومو وتحت EMA200 مع اتجاه هابط قوي ADX >= 25 وتدفق سيولة سلبي MFI <= 45
+    jesse_short = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and (cur_4h["close"] < cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val <= 45.0)
+
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
         atr_val = float(cur_4h["atr"])
@@ -165,7 +170,17 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
             stop_level=round(entry - 2.0 * atr_val, 2),
             target_level=round(entry + 4.0 * atr_val, 2),
             time=str(cur_4h["time"]),
-            reasons=["اختراق سحابة إيشيموكو وبولينجر 4H للأعلى", "السعر أعلى من متوسط 200 المؤسسي (الاتجاه الصاعد النقي)", "نمط Long-Only بربح +87% في آخر 3 أشهر"]
+            reasons=["اختراق سحابة إيشيموكو وبولينجر 4H للأعلى", "السعر أعلى من متوسط 200 المؤسسي (الاتجاه الصاعد النقي)", "زخم مؤسسي قوي وتدفق سيولة إيجابي"]
+        ))
+    elif jesse_short and not ((prev_4h["close"] < prev_4h["bb_lower"]) and (prev_4h["close"] < prev_4h["span_a"])):
+        entry = float(cur_4h["close"])
+        atr_val = float(cur_4h["atr"])
+        signals.append(Signal(
+            spec_id="B", side=-1, price=entry,
+            stop_level=round(entry + 2.0 * atr_val, 2),
+            target_level=round(entry - 4.0 * atr_val, 2),
+            time=str(cur_4h["time"]),
+            reasons=["كسر سحابة إيشيموكو وبولينجر 4H للأسفل", "السعر أسفل متوسط 200 المؤسسي (الاتجاه الهابط الصريح)", "قوة اتجاه هابطة ADX >= 25 وتدفق أموال سلبي"]
         ))
 
     # [C] SMC Liquidity Sweep 30-bar 4H (النافذة المحسنة PF 2.10)
