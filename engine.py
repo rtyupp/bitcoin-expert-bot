@@ -2,12 +2,12 @@
 
 يقوم بالتالي:
 1. جلب الشموع والأسعار المباشرة من Capital.com
-2. فحص إشارات الدخول عبر الاستراتيجيات المؤسسية الأربع المتكيفة (A, B, C, D)
+2. فحص إشارات الدخول عبر الاستراتيجيتين النشطتين (B, C) مع فلتر جودة الشمعة
 3. التحقق من عدم وجود صفقات مكررة لنفس الاستراتيجية (One Slot Per Strategy)
 4. حساب حجم العقد بدقة حسب نسبة المخاطرة المحددة (مثلاً 1% من الرصيد المتاح)
 5. إرسال أمر الصفقة مع الوقف والهدف إلى حساب Capital.com
 6. مراقبة الصفقات المفتوحة وتنفيذ قواعد الخروج على الشمعة المغلقة
-   (MA20 لـ[B] وكل البيع، و2×ATR للشراء [A]/[C]/[D]) وتحريك الوقف عند +0.8R
+   (شاندلير 4×ATR لـ[B]، و2×ATR تحت الدخول لـ[C]) وتحريك الوقف عند +1.0R
 7. إرسال تنبيهات تفصيلية وفورية عبر تيليجرام
 """
 from __future__ import annotations
@@ -52,26 +52,44 @@ def exit_reason_for(
     side: int,
     entry: float,
     close: float,
+    peak: float,
     ma20: float,
     atr_val: float,
 ) -> Optional[str]:
-    """قاعدة الخروج على الشمعة المغلقة، مطابقة لباكتست الـ12 شهراً.
+    """قاعدة الخروج على الشمعة المغلقة، مطابقة للاختبار التاريخي.
 
-    - [B]: إغلاق 4H ضد اتجاه الصفقة بالنسبة لمتوسط MA20.
-    - [A]/[C]/[D] شراء: إغلاق تحت الدخول بمقدار 2×ATR (وقف تتبعي منطقي).
-    - كل البيع: إغلاق 4H فوق MA20.
+    - [B]: خروج شاندلير 4×ATR (إغلاق تحت أعلى قمة محققة منذ الدخول بمقدار 4×ATR).
+    - [C]: إغلاق تحت الدخول بمقدار 2×ATR.
+    - [A] (معطّلة): إغلاق 4H تحت EMA50.
+    - كل البيع (صفقات قديمة): إغلاق 4H فوق MA20.
     """
     if side == 1:
         if spec_id == "B":
-            if close < ma20:
-                return "إغلاق 4H تحت MA20"
-        elif spec_id in ("A", "C", "D"):
+            if atr_val > 0 and close < peak - 4.0 * atr_val:
+                return "إغلاق تحت قمة الصفقة بمقدار 4×ATR (شاندلير)"
+        elif spec_id == "C":
             if atr_val > 0 and close < entry - 2.0 * atr_val:
                 return "إغلاق تحت الدخول بمقدار 2×ATR"
     else:
         if close > ma20:
             return "إغلاق 4H فوق MA20"
     return None
+
+
+def trade_peak(candles: List[Dict[str, Any]], entry_candle: str, side: int, entry: float) -> float:
+    """أعلى قمة (أو أدنى قاع) محققة منذ شمعة الدخول — مطابق لباكتست شاندلير."""
+    if side == 1:
+        peak = entry
+        for c in candles:
+            if str(c.get("time", "")) >= entry_candle:
+                peak = max(peak, float(c["high"]))
+        return peak
+    peak = entry
+    for c in candles:
+        if str(c.get("time", "")) >= entry_candle:
+            peak = min(peak, float(c["low"]))
+    return peak
+
 
 
 def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -116,7 +134,6 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
             continue
 
         pos = open_deal_ids[deal_id]
-        cur_price = pos["current_price"]
         entry = float(tr_info.get("level") or 0.0)
         stop = float(tr_info.get("stop_level") or 0.0)
         side = 1 if tr_info["direction"] == "BUY" else -1
@@ -124,8 +141,14 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
 
         # لا نقيّم الخروج على نفس الشمعة التي دخلنا بها (مطابقة للباكتست)
         same_candle = tr_info.get("entry_candle") == last_candle_time
+        peak = trade_peak(c_4h, str(tr_info.get("entry_candle") or last_candle_time), side, entry)
+        stored_peak = tr_info.get("peak")
+        if stored_peak is not None:
+            peak = max(peak, float(stored_peak)) if side == 1 else min(peak, float(stored_peak))
+        if stored_peak is None or peak != float(stored_peak):
+            state.update_trade(spec_id, peak=peak)
         exit_reason = None if same_candle else exit_reason_for(
-            spec_id, side, entry, float(last_4h["close"]), ma20_val, atr_4h_val
+            spec_id, side, entry, float(last_4h["close"]), peak, ma20_val, atr_4h_val
         )
 
         if exit_reason:
@@ -157,10 +180,10 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                 logs.append(f"⚠️ فشل إغلاق الصفقة [{spec_id}] تلقائياً: {msg_close}")
             continue
 
-        # فحص تأمين الصفقة (Break-Even)
-        if not tr_info.get("moved_be") and initial_risk > 0:
-            floating_gain = (cur_price - entry) if side == 1 else (entry - cur_price)
-            if floating_gain >= 0.8 * initial_risk:
+        # فحص تأمين الصفقة (Break-Even) على الشمعة المغلقة — مطابق للباكتست
+        if not tr_info.get("moved_be") and initial_risk > 0 and not same_candle:
+            bar_gain = (float(last_4h["high"]) - entry) if side == 1 else (entry - float(last_4h["low"]))
+            if bar_gain >= 1.0 * initial_risk:
                 ok_up, msg_up = client.update_position(deal_id, stop_level=entry)
                 if ok_up:
                     tr_info["moved_be"] = True
@@ -207,7 +230,8 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                 deal_data = {
                     **deal_data,
                     "strat_name": sig.spec.name,
-                    "entry_candle": sig.time,
+                    "entry_candle": last_candle_time,
+                    "peak": float(last_4h["high"]) if sig.side == 1 else float(last_4h["low"]),
                 }
                 state.record_trade(spec_id, deal_data)
                 trade_record["deal_id"] = deal_data.get("deal_id")

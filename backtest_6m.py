@@ -1,7 +1,7 @@
 """اختبار تاريخي 6 أشهر (2026-04-22 → 2026-10-22) على منطق البوت الحقيقي.
 
 يستخدم نفس دالة الفحص S.scan_signals ودالة الخروج engine.exit_reason_for،
-ويحاكي الشمعة المغلقة فقط + فتحة واحدة لكل استراتيجية + Break-Even عند 0.8R.
+ويحاكي الشمعة المغلقة فقط + فتحة واحدة لكل استراتيجية + Break-Even عند 1.0R.
 """
 from __future__ import annotations
 
@@ -61,10 +61,12 @@ class Trade:
     reason: str = ""
     pnl: float = 0.0
     r: float = 0.0
+    peak: float = 0.0
 
 
 def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
-        fixed_size: float | None, live_bars: bool = False, verbose: bool = False) -> dict:
+        fixed_size: float | None, live_bars: bool = False, verbose: bool = False,
+        funding_rates: tuple[float, float] | None = None) -> dict:
     bal = INITIAL_BALANCE
     active: dict[str, Trade] = {}
     trades: list[Trade] = []
@@ -74,6 +76,7 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
     curve: list[tuple[pd.Timestamp, float]] = []
 
     start_i = int(d4.index[d4["time"] >= START][0])
+    dd_done = dd["time"].to_numpy("datetime64[ns]") + np.timedelta64(1, "D")
     for i in range(start_i, len(d4)):
         bar = d4.iloc[i]
         if bar["time"] > END:
@@ -85,6 +88,7 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
             tr = active[sid]
             same = tr.entry_time == bar["time"]
             hi, lo, cl = float(bar["high"]), float(bar["low"]), float(bar["close"])
+            tr.peak = max(tr.peak, hi) if tr.side == 1 else min(tr.peak, lo)
 
             if not same:
                 exit_p, reason = None, ""
@@ -104,7 +108,7 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
                     last = h4.iloc[-1]
                     reason = E.exit_reason_for(
                         sid if sid != "SMC" else "C", tr.side, tr.entry, cl,
-                        float(last["ma20"]), float(last["atr"]),
+                        tr.peak, float(last["ma20"]), float(last["atr"]),
                     )
                     if reason:
                         exit_p = cl
@@ -112,6 +116,10 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
                 if exit_p is not None:
                     gross = (exit_p - tr.entry) * tr.size if tr.side == 1 else (tr.entry - exit_p) * tr.size
                     cost = SPREAD * tr.size if use_spread else 0.0
+                    if funding_rates:
+                        rate = funding_rates[0] if tr.side == 1 else funding_rates[1]
+                        days = max(0.0, (bar["time"] - tr.entry_time).total_seconds() / 86400.0)
+                        cost += tr.entry * tr.size * (rate / 100.0) * days
                     tr.pnl = gross - cost
                     tr.exit, tr.exit_time, tr.reason = exit_p, bar["time"], reason
                     risk_usd = abs(tr.entry - (tr.init_stop or tr.stop)) * tr.size
@@ -126,21 +134,21 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
                               f"{'BUY' if tr.side == 1 else 'SELL'} {tr.entry:,.0f}→{exit_p:,.0f} "
                               f"{tr.pnl:+.2f}$ [{reason}]")
 
-            # Break-Even (يراقب السعر كل دقيقة → يمكن أن يتحقق بنفس شمعة الدخول)
-            if use_be and abs(tr.stop - tr.entry) > 0:
+            # Break-Even: لا يُقيَّم على شمعة الدخول لأن قمتها/قاعها حصلا قبل سعر الدخول
+            if use_be and not same and abs(tr.stop - tr.entry) > 0:
                 risk = abs(tr.entry - tr.stop)
                 gain = (hi - tr.entry) if tr.side == 1 else (tr.entry - lo)
-                if gain >= 0.8 * risk and (tr.side == 1 and tr.stop < tr.entry or tr.side == -1 and tr.stop > tr.entry):
+                if gain >= 1.0 * risk and (tr.side == 1 and tr.stop < tr.entry or tr.side == -1 and tr.stop > tr.entry):
                     tr.stop = tr.entry
 
         # ── إشارات الدخول من نفس دالة البوت ────────────────────────────────
-        d_closed = dd[(dd["time"] + pd.Timedelta(days=1)) <= now]
-        if len(d_closed) < 300:
+        d_end = int(np.searchsorted(dd_done, now.tz_convert("UTC").tz_localize(None).to_datetime64(), side="right"))
+        if d_end < 300:
             continue
-        # live_bars=True يحاكي ما يفعله البوت فعلياً: max_candles=100 فقط
-        n4 = 100 if live_bars else 2000
-        nd = 100 if live_bars else DAILY_WARMUP
-        d_slice = d_closed.iloc[-nd:]
+        # live_bars=True يحاكي ما يفعله البوت فعلياً: 4H=300 و اليومي=400 (engine.evaluate_and_trade)
+        n4 = 300 if live_bars else 2000
+        nd = 400 if live_bars else DAILY_WARMUP
+        d_slice = dd.iloc[max(0, d_end - nd): d_end]
         sigs = S.scan_signals(d4.iloc[:0], d4.iloc[max(0, i - n4): i + 1], d_slice)
 
         for sig in sigs:
@@ -157,7 +165,8 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
                 dist = abs(entry - sig.stop_level)
                 size = max(MIN_SIZE, round(risk_usd / dist, 4)) if dist > 0 else MIN_SIZE
             tr = Trade(sid, sig.side, bar["time"], entry, sig.stop_level, sig.target_level,
-                       size, init_stop=sig.stop_level)
+                       size, init_stop=sig.stop_level,
+                       peak=float(bar["high"]) if sig.side == 1 else float(bar["low"]))
             active[sid] = tr
             max_concurrent = max(max_concurrent, len(active))
             if verbose:
@@ -168,7 +177,12 @@ def run(d4: pd.DataFrame, dd: pd.DataFrame, *, use_be: bool, use_spread: bool,
     last_close = float(d4.iloc[i]["close"])
     for sid, tr in list(active.items()):
         gross = (last_close - tr.entry) * tr.size if tr.side == 1 else (tr.entry - last_close) * tr.size
-        tr.pnl = gross - (SPREAD * tr.size if use_spread else 0.0)
+        cost = SPREAD * tr.size if use_spread else 0.0
+        if funding_rates:
+            rate = funding_rates[0] if tr.side == 1 else funding_rates[1]
+            days = max(0.0, (d4.iloc[i]["time"] - tr.entry_time).total_seconds() / 86400.0)
+            cost += tr.entry * tr.size * (rate / 100.0) * days
+        tr.pnl = gross - cost
         risk_usd = abs(tr.entry - (tr.init_stop or tr.stop)) * tr.size
         tr.r = tr.pnl / risk_usd if risk_usd else 0.0
         tr.exit, tr.exit_time, tr.reason = last_close, d4.iloc[i]["time"], "OPEN_AT_END"
@@ -218,7 +232,7 @@ def main() -> None:
         ("risk1% بدون BE + سبريد", dict(use_be=False, use_spread=True, fixed_size=None)),
         ("حجم ثابت 0.002 + BE + سبريد", dict(use_be=True, use_spread=True, fixed_size=0.002)),
         ("حجم ثابت 0.002 بدون BE وبدون سبريد (منهجية 12 شهر)", dict(use_be=False, use_spread=False, fixed_size=0.002)),
-        ("كما يحسبها البوت الآن: 100 شمعة فقط (risk1% + BE + سبريد)",
+        ("كما يشتغل البوت الآن: 300 شمعة 4H / 400 يومية (risk1% + BE + سبريد)",
          dict(use_be=True, use_spread=True, fixed_size=None, live_bars=True)),
     ]
     results = {}

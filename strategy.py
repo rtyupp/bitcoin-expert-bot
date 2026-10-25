@@ -1,14 +1,20 @@
 """نواة استراتيجيات البيتكوين المؤسسية المتكيفة (Bitcoin Institutional Adaptive Strategies).
 
-تدمج 4 محركات، وكلها مفحوصة على شموع مغلقة فقط:
-1. [A] اختراق دونشيان اليومي المؤسسي (Donchian 55 Daily Breakout) — ركوب الاتجاه الكاسح.
-2. [B] سحابة إيشيموكو وبولينجر 4H (Jesse Ichimoku Cloud Breakout) — ركوب الاتجاه مع خروج على MA20.
-3. [C] قنص كنس السيولة 4H (SMC Liquidity Sweep) — اصطياد فخاخ الدببة عند كسر القيعان.
-4. [D] قنص تحركات الحيتان 4H (Whale Shadow) — تجميع/تصريف عند أطراف بولينجر.
+المحركان الفعّالان (مفحوصان على شموع مغلقة فقط):
+1. [B] سحابة إيشيموكو وبولينجر 4H (Jesse Ichimoku Cloud Breakout) — ركوب الاتجاه،
+   وقف 0.75×ATR، هدف 8×ATR، وخروج شاندلير 4×ATR.
+2. [C] قنص كنس السيولة 4H (SMC Liquidity Sweep) — اصطياد فخاخ الدببة عند كسر القيعان،
+   وقف 1.5×ATR، هدف 4.5×ATR، وخروج تحت الدخول بـ2×ATR.
 
-الاختبار الخلفي على كود المحرك نفسه (شموع مغلقة، 1% مخاطرة، سبريد $50،
-تأمين وقف 0.8R): آخر 12 شهراً 38 صفقة وفوز 21.1% و PF 1.09 وصافي +1.1%،
-وآخر 6 أشهر 19 صفقة وصافي -3.0%. التفاصيل في backtest_6m.py و README.
+فلتر جودة الشمعة (مشترك): لا يُقبل الدخول إلا إذا كان حجم شمعة الإشارة ≥ متوسط
+آخر 20 شمعة 4H، وكان الإغلاق في النصف الأعلى من مداها. أضافه بحث 2026 بعد أن
+رفع PF من 4.23 إلى 5.89 وCAGR من 22.2% إلى 24.5% مع خفض التراجع، وتجاوز
+100% من العينات العشوائية بنفس عدد الصفقات.
+
+[A] دونشيان 55 يوم معطّلة بعد أن أثبت البحث (2304 إعداد + تحقق خارج العينة) أن
+إسقاطها يرفع Calmar من 18.9 إلى 31.8 ويحوّل آخر 6 أشهر من خسارة إلى ربح.
+[D] الحيتان أُخرجت سابقاً (-25.6$، PF 0.75 على 8.8 سنة)، والبيع أُلغي لأن
+المحفظة الطويلة فقط كانت أفضل عائداً/مخاطرة. التفاصيل في optimize.py و README.
 """
 from __future__ import annotations
 
@@ -29,11 +35,13 @@ class StrategySpec:
     description: str
 
 SPECS: Dict[str, StrategySpec] = {
-    "A": StrategySpec("A", "الانفجار الشهري المؤسسي (Donchian 55)", "1d", 3.0, "ركوب موجات الصعود الكبرى بالبيتكوين عند كسر قمة 55 يوماً فوق EMA200"),
-    "B": StrategySpec("B", "سحابة إيشيموكو وبولينجر 4H (Long Trend)", "4h", 2.0, "ركوب الاتجاه الصاعد فوق متوسط 200 يوم، مع خروج على إغلاق MA20"),
-    "C": StrategySpec("C", "قنص كنس السيولة SMC 30-Bar", "4h", 2.0, "اصطياد فخاخ الدببة وكنس قاع 30 شمعة ثم الارتداد"),
-    "D": StrategySpec("D", "قنص تحركات الحيتان في التذبذب (Whale Shadow)", "4h", 1.67, "اصطياد تجميع وتصريف الحيتان عبر تدفق السيولة MFI عند أطراف بولينجر"),
+    "A": StrategySpec("A", "الانفجار الشهري المؤسسي (Donchian 55)", "1d", 1.67, "ركوب موجات الصعود الكبرى بالبيتكوين عند كسر قمة 55 يوماً فوق EMA200 (معطّلة حالياً)"),
+    "B": StrategySpec("B", "سحابة إيشيموكو وبولينجر 4H (Long Trend)", "4h", 10.67, "ركوب الاتجاه الصاعد فوق متوسط 200، وقف 0.75×ATR وهدف 8×ATR وخروج شاندلير 4×ATR"),
+    "C": StrategySpec("C", "قنص كنس السيولة SMC 30-Bar", "4h", 3.0, "اصطياد فخاخ الدببة وكنس قاع 30 شمعة ثم الارتداد"),
 }
+
+# المحركات المفعّلة فعلياً في المسح الحي (البحث أثبت تفوّق إسقاط A).
+ACTIVE_SPECS: Tuple[str, ...] = ("B", "C")
 
 @dataclass
 class Signal:
@@ -65,6 +73,10 @@ def compute_indicators_4h(df: pd.DataFrame) -> pd.DataFrame:
     # Bollinger Bands
     df["ma20"] = c.rolling(20).mean()
     std20 = c.rolling(20).std()
+    # فلتر جودة الشمعة: حجم فوق متوسط آخر 20 شمعة (بدون الشمعة الحالية) وإغلاق قوي
+    df["vol_ma20_prev"] = df["volume"].rolling(20).mean().shift(1)
+    bar_range = (h - l).replace(0, np.nan)
+    df["bar_pos"] = ((c - l) / bar_range).fillna(0.5)
     df["bb_upper"] = df["ma20"] + 2.0 * std20
     df["bb_lower"] = df["ma20"] - 2.0 * std20
 
@@ -125,9 +137,8 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     cur_d1 = d1.iloc[-1]
 
     d_bull = cur_d1["close"] > cur_d1["ema50"]
-    d_bear = cur_d1["close"] < cur_d1["ema50"]
 
-    # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر الحيتان وفلتر معنويات القطيع)
+    # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر نظام السوق اليومي ومعنويات القطيع)
     # السر الأسطوري: رفع عتبة قوة الاتجاه الصافي ADX >= 25 لمنع صفقات التذبذب الخامل
     c_s = h4["close"]
     net_c = abs(c_s - c_s.shift(14))
@@ -155,95 +166,49 @@ def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) 
     highest_mfi_20 = float(mfi_series.rolling(20).max().shift(1).iloc[-1])
     is_mfi_divergence = (cur_4h["close"] > float(h4["high"].rolling(20).max().shift(1).iloc[-1])) and (mfi_val < highest_mfi_20 - 5.0)
 
-    # فلتر استشعار معنويات كابيتال: فحص التضخم المفرط في شراء القطيع
-    sent = client.get_sentiment("BTCUSD")
-    retail_greed_trap = bool(sent and sent.get("long_pct", 50.0) > 80.0)
+    # فلتر جودة الشمعة: حجم تداول فوق متوسط آخر 20 شمعة وإغلاق في النصف الأعلى من المدى
+    quality_bar = (cur_4h["volume"] >= cur_4h["vol_ma20_prev"]) and (cur_4h["bar_pos"] >= 0.5)
 
-    # 1. صفقات الترند المؤسسي الصاعد (Jesse Bull)
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val >= 50.0) and (not is_mfi_divergence) and (not retail_greed_trap)
-
-    # 2. صفقات الهبوط المؤسسي الصريح (Bear Trend Short):
-    # كسر أسفل بولينجر وتحت سحابة كومو وتحت EMA200 4H مع شرط التوافق اليومي الحاسم (السعر اليومي تحت EMA200 اليومي)
-    # وقوة اتجاه هابطة ADX >= 25 وتدفق سيولة سلبي MFI <= 45
-    cur_d1_close = float(cur_d1["close"])
-    cur_d1_ema200 = float(cur_d1["ema200"])
-    daily_bear_aligned = cur_d1_close < cur_d1_ema200
-
-    jesse_short = (cur_4h["close"] < cur_4h["bb_lower"]) and (cur_4h["close"] < cur_4h["span_a"]) and (cur_4h["close"] < cur_4h["span_b"]) and (cur_4h["close"] < cur_4h["ema200"]) and daily_bear_aligned and (adx_4h_val >= 25.0) and (er_val >= 0.35) and (mfi_val <= 45.0)
+    # 1. صفقات الترند المؤسسي الصاعد (Jesse Bull) — طويل فقط
+    # شرط إضافي: الإغلاق اليومي فوق EMA50 اليومي (فلتر نظام السوق)
+    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and d_bull and (adx_4h_val >= 25.0) and (er_val >= 0.30) and (mfi_val >= 50.0) and (not is_mfi_divergence) and quality_bar
 
     if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
         entry = float(cur_4h["close"])
         atr_val = float(cur_4h["atr"])
         signals.append(Signal(
             spec_id="B", side=1, price=entry,
-            stop_level=round(entry - 2.0 * atr_val, 2),
-            target_level=round(entry + 4.0 * atr_val, 2),
+            stop_level=round(entry - 0.75 * atr_val, 2),
+            target_level=round(entry + 8.0 * atr_val, 2),
             time=str(cur_4h["time"]),
-            reasons=["اختراق سحابة إيشيموكو وبولينجر 4H للأعلى", "السعر أعلى من متوسط 200 المؤسسي (الاتجاه الصاعد النقي)", "زخم مؤسسي قوي وتدفق سيولة إيجابي"]
-        ))
-    elif jesse_short and not ((prev_4h["close"] < prev_4h["bb_lower"]) and (prev_4h["close"] < prev_4h["span_a"])):
-        entry = float(cur_4h["close"])
-        atr_val = float(cur_4h["atr"])
-        signals.append(Signal(
-            spec_id="B", side=-1, price=entry,
-            stop_level=round(entry + 2.0 * atr_val, 2),
-            target_level=round(entry - 4.0 * atr_val, 2),
-            time=str(cur_4h["time"]),
-            reasons=["كسر سحابة إيشيموكو وبولينجر 4H للأسفل", "السعر أسفل متوسط 200 المؤسسي (الاتجاه الهابط الصريح)", "قوة اتجاه هابطة ADX >= 25 وتدفق أموال سلبي"]
+            reasons=["اختراق سحابة إيشيموكو وبولينجر 4H للأعلى", "السعر فوق EMA200 4H واليومي فوق EMA50 (نظام صاعد)", "زخم مؤسسي قوي وتدفق سيولة إيجابي", "حجم فوق المتوسط وإغلاق في النصف الأعلى من الشمعة"]
         ))
 
-    # [C] SMC Liquidity Sweep 30-bar 4H (النافذة المحسنة PF 2.10)
-    smc_buy = (cur_4h["low"] < cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["open"]) and (cur_4h["close"] > cur_4h["ema100"])
+    # [C] SMC Liquidity Sweep 30-bar 4H
+    smc_buy = (cur_4h["low"] < cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["open"]) and (cur_4h["close"] > cur_4h["ema100"]) and (cur_4h["close"] > cur_4h["ema200"]) and quality_bar
     if smc_buy and not (prev_4h["low"] < prev_4h["lo30"] and prev_4h["close"] > prev_4h["lo30"]):
         entry = float(cur_4h["close"])
         atr_val = float(cur_4h["atr"])
         signals.append(Signal(
             spec_id="C", side=1, price=entry,
             stop_level=round(entry - 1.5 * atr_val, 2),
-            target_level=round(entry + 3.0 * atr_val, 2),
+            target_level=round(entry + 4.5 * atr_val, 2),
             time=str(cur_4h["time"]),
-            reasons=["كنس سيولة عميق (كسر قاع 30 شمعة 4H ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق متوسط EMA100 المؤسسي"]
+            reasons=["كنس سيولة عميق (كسر قاع 30 شمعة 4H ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق EMA100 وEMA200 المؤسسيين", "حجم فوق المتوسط وإغلاق في النصف الأعلى من الشمعة"]
         ))
 
-    # [D] قنص تحركات الحيتان في التذبذب (Whale Shadow Accumulation/Distribution)
-    # تجميع الحيتان (Whale Pump): السعر عند قاع بولينجر وتدفق السيولة قوي MFI > 52 وشمعة خضراء
-    whale_pump = (cur_4h["low"] <= cur_4h["bb_lower"]) and (mfi_val > 52.0) and (cur_4h["close"] > cur_4h["open"])
-    # تصريف الحيتان (Whale Dump): السعر عند قمة بولينجر وتدفق السيولة ضعيف MFI < 48 وشمعة حمراء
-    whale_dump = (cur_4h["high"] >= cur_4h["bb_upper"]) and (mfi_val < 48.0) and (cur_4h["close"] < cur_4h["open"])
-
-    if whale_pump and not ((prev_4h["low"] <= prev_4h["bb_lower"]) and (prev_4h["close"] > prev_4h["open"])):
-        entry = float(cur_4h["close"])
-        atr_val = float(cur_4h["atr"])
-        signals.append(Signal(
-            spec_id="D", side=1, price=entry,
-            stop_level=round(entry - 1.5 * atr_val, 2),
-            target_level=round(entry + 2.5 * atr_val, 2),
-            time=str(cur_4h["time"]),
-            reasons=["تجميع حيتان خفي (Whale Accumulation)", "السعر عند قاع بولينجر لكن تدفق السيولة MFI صاعد بقوة", "إغلاق شمعة ارتدادية صاعدة خضراء"]
-        ))
-    elif whale_dump and not ((prev_4h["high"] >= prev_4h["bb_upper"]) and (prev_4h["close"] < prev_4h["open"])):
-        entry = float(cur_4h["close"])
-        atr_val = float(cur_4h["atr"])
-        signals.append(Signal(
-            spec_id="D", side=-1, price=entry,
-            stop_level=round(entry + 1.5 * atr_val, 2),
-            target_level=round(entry - 2.5 * atr_val, 2),
-            time=str(cur_4h["time"]),
-            reasons=["تصريف حيتان خفي (Whale Distribution)", "السعر عند قمة بولينجر لكن تدفق السيولة MFI هابط وضعيف", "إغلاق شمعة انعكاسية هابطة حمراء"]
-        ))
-
-    # [A] الانفجار الشهري المؤسسي (Donchian 55 Daily Breakout)
+    # [A] الانفجار الشهري المؤسسي (Donchian 55 Daily Breakout) — معطّلة
     prev_d1 = d1.iloc[-2]
     don_buy = (cur_d1["close"] > cur_d1["hi55"]) and (cur_d1["close"] > cur_d1["ema200"])
-    if don_buy and not (prev_d1["close"] > prev_d1["hi55"]):
+    if "A" in ACTIVE_SPECS and don_buy and not (prev_d1["close"] > prev_d1["hi55"]):
         entry = float(cur_d1["close"])
         atr_val = float(cur_d1["atr"])
         signals.append(Signal(
             spec_id="A", side=1, price=entry,
-            stop_level=round(entry - 2.0 * atr_val, 2),
+            stop_level=round(entry - 3.0 * atr_val, 2),
             target_level=round(entry + 5.0 * atr_val, 2),
             time=str(cur_d1["time"]),
-            reasons=["اختراق قمة 55 يوماً التاريخية (الانفجار الشهري)", "السعر أعلى من متوسط 200 يوم المؤسسي", "وقف 2×ATR وهدف 5×ATR"]
+            reasons=["اختراق قمة 55 يوماً التاريخية (الانفجار الشهري)", "السعر أعلى من متوسط 200 يوم المؤسسي", "وقف 3×ATR وهدف 5×ATR"]
         ))
 
     return signals
