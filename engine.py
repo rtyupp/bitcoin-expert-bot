@@ -24,6 +24,7 @@ import strategy as S
 import strategy_gold as SG
 import strategy_us500 as SU
 import ai_profit_guardian as AIG
+import ai_smart_stop as AIS
 
 log = logging.getLogger("engine")
 
@@ -194,26 +195,25 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                     state.update_trade(spec_id, moved_be=True, stop_level=entry)
                     logs.append(f"🔒 تم تأمين الصفقة [{spec_id}] بنجاح بنقل الوقف إلى سعر الدخول ${entry:,.1f}.")
 
-        # 🤖 فحص حارس الأرباح الذكي (AI Profit Guardian): تأمين أرباح حقيقية في الجيب إذا انطلق السعر ثم ارتد
+        # 🤖 نظام الوقف الذكي والتأمين التدريجي (AI Smart Trailing)
         cur_px = float(pos.get("current_price") or last_4h["close"])
-        prev_close_val = float(h4.iloc[-2]["close"]) if len(h4) >= 2 else float(last_4h["close"])
-        should_lock, lock_stop, lock_reason = AIG.evaluate_profit_lock(
-            epic=pos.get("market", {}).get("epic", "BTCUSD"),
+        cur_stop = float(tr_info.get("stop_level") or stop)
+        should_ai_update, ai_new_stop, ai_reason = AIS.evaluate_ai_dynamic_trailing(
             direction=tr_info["direction"],
             entry_price=entry,
             current_price=cur_px,
-            highest_price=peak if side == 1 else entry,
-            lowest_price=peak if side == -1 else entry,
+            peak_price=peak,
+            current_stop=cur_stop,
             atr_val=atr_4h_val,
-            last_candle_close=float(last_4h["close"]),
-            prev_candle_close=prev_close_val
+            recent_candles=df_4h,
+            spread_cost=50.0
         )
-        if should_lock and lock_stop != float(tr_info.get("stop_level") or 0.0):
-            ok_lock, msg_lock = client.update_position(deal_id, stop_level=lock_stop)
-            if ok_lock:
-                tr_info["stop_level"] = lock_stop
-                state.update_trade(spec_id, stop_level=lock_stop)
-                logs.append(lock_reason)
+        if should_ai_update and ai_new_stop != cur_stop:
+            ok_ai, msg_ai = client.update_position(deal_id, stop_level=ai_new_stop)
+            if ok_ai:
+                tr_info["stop_level"] = ai_new_stop
+                state.update_trade(spec_id, stop_level=ai_new_stop)
+                logs.append(ai_reason)
 
     # 2. فحص إشارات الدخول الجديدة
     signals = S.scan_signals(df_1h, df_4h, df_1d)
