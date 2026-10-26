@@ -29,14 +29,17 @@ import ai_smart_stop as AIS
 
 log = logging.getLogger("engine")
 
-def calculate_position_size(epic: str, entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
-    """حساب حجم العقد بناءً على الرصيد المتاح ونقطة الوقف لكل أصل."""
+def calculate_position_size(epic: str, entry_price: float, stop_loss_price: float, risk_pct: float = 1.0, is_a_plus: bool = False) -> float:
+    """حساب حجم العقد بناءً على الرصيد المتاح ونقطة الوقف، مع ميزة A+ Sizing التكيفية."""
     acc = client.get_account_details()
     if not acc:
         return 0.0001 if epic == "BTCUSD" else 0.01
 
+    # رفع المخاطرة للصفقات الذهبية المتوافقة مع الاتجاه الأكبر A+ (حتى 3.0% - 3.5%)
+    effective_risk_pct = min(3.5, risk_pct * 1.75) if is_a_plus else risk_pct
+
     available_balance = acc["available"]
-    risk_amount = available_balance * (risk_pct / 100.0)
+    risk_amount = available_balance * (effective_risk_pct / 100.0)
     stop_distance = abs(entry_price - stop_loss_price)
 
     if stop_distance <= 0:
@@ -298,7 +301,9 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
             if usig.spec_id in active:
                 continue
             u_dir = "BUY" if usig.side == 1 else "SELL"
-            u_size = calculate_position_size("US500", usig.price, usig.stop_level, risk_pct)
+            # صفقات التأكيد المؤسسي في US500 هي A+ Setup
+            is_a_plus = "CONFIRM" in usig.spec_id
+            u_size = calculate_position_size("US500", usig.price, usig.stop_level, risk_pct, is_a_plus=is_a_plus)
             if auto_trade_enabled:
                 ok, msg, deal_data = client.open_position(
                     direction=u_dir, size=u_size, epic="US500",
@@ -306,7 +311,8 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                 )
                 if ok and deal_data:
                     state.record_trade(usig.spec_id, {**deal_data, "strat_name": usig.spec_id, "asset": "US500"})
-                    logs.append(f"🇺🇸 تم فتح صفقة مؤشر أسهم جديدة [{usig.spec_id}] حجم {u_size} عقد.")
+                    tier_str = "🌟 [A+ Setup]" if is_a_plus else ""
+                    logs.append(f"🇺🇸 تم فتح صفقة مؤشر أسهم جديدة {tier_str} [{usig.spec_id}] حجم {u_size} عقد.")
             else:
                 logs.append(f"🔔 إشارة US500 جديدة [{usig.spec_id}] (الآلي معطل).")
 
@@ -318,7 +324,8 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
             if nsig.spec_id in active:
                 continue
             n_dir = "BUY" if nsig.side == 1 else "SELL"
-            n_size = calculate_position_size("US100", nsig.price, nsig.stop_level, risk_pct)
+            # ترند ناسداك يعتبر فرصة ممتازة A+ Setup
+            n_size = calculate_position_size("US100", nsig.price, nsig.stop_level, risk_pct, is_a_plus=True)
             if auto_trade_enabled:
                 ok, msg, deal_data = client.open_position(
                     direction=n_dir, size=n_size, epic="US100",
@@ -326,7 +333,7 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                 )
                 if ok and deal_data:
                     state.record_trade(nsig.spec_id, {**deal_data, "strat_name": nsig.spec_id, "asset": "US100"})
-                    logs.append(f"💻 تم فتح صفقة ناسداك جديدة [{nsig.spec_id}] حجم {n_size} عقد.")
+                    logs.append(f"💻 تم فتح صفقة ناسداك جديدة 🌟 [A+ Setup] [{nsig.spec_id}] حجم {n_size} عقد.")
             else:
                 logs.append(f"🔔 إشارة ناسداك US100 جديدة [{nsig.spec_id}] (الآلي معطل).")
 
