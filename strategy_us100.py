@@ -58,6 +58,11 @@ def scan_nasdaq_signals(df_1h: pd.DataFrame) -> List[NasdaqSignal]:
     df["hi20"] = h.rolling(20).max().shift(1)
     df["lo20"] = l.rolling(20).min().shift(1)
 
+    # مؤشر كفاءة الحركة الذكي لكشف التذبذب العشوائي (Kaufman Efficiency Ratio)
+    change = (c - c.shift(20)).abs()
+    volatility = (c - c.shift(1)).abs().rolling(20).sum()
+    df["er"] = change / (volatility + 1e-9)
+
     cur = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -67,13 +72,14 @@ def scan_nasdaq_signals(df_1h: pd.DataFrame) -> List[NasdaqSignal]:
     ema200_v = float(cur["ema200"])
     hi20_v = float(cur["hi20"])
     lo20_v = float(cur["lo20"])
+    er_v = float(cur["er"])
 
-    # 1. شروط الشراء (Long)
-    buy_cond = (cur_p > hi20_v) and (cur_p > ema200_v) and (rsi_v <= 75.0)
+    # 1. شروط الشراء (Long) - مع اشتراط كفاءة ترند ER >= 0.25 لتجنب فخ التذبذب
+    buy_cond = (cur_p > hi20_v) and (cur_p > ema200_v) and (rsi_v <= 75.0) and (er_v >= 0.25)
     prev_buy_cond = (float(prev["close"]) > float(prev["hi20"])) and (float(prev["close"]) > float(prev["ema200"]))
 
-    # 2. شروط البيع (Short)
-    sell_cond = (cur_p < lo20_v) and (cur_p < ema200_v) and (rsi_v >= 25.0)
+    # 2. شروط البيع (Short) - مع اشتراط كفاءة ترند ER >= 0.25
+    sell_cond = (cur_p < lo20_v) and (cur_p < ema200_v) and (rsi_v >= 25.0) and (er_v >= 0.25)
     prev_sell_cond = (float(prev["close"]) < float(prev["lo20"])) and (float(prev["close"]) < float(prev["ema200"]))
 
     # الدخول عند بداية الكسر فقط (Bar Close)
@@ -92,6 +98,7 @@ def scan_nasdaq_signals(df_1h: pd.DataFrame) -> List[NasdaqSignal]:
             reasons=[
                 "اختراق قمة 20 شمعة على فريم 1H لناسداك",
                 "السعر أعلى من متوسط 200 المؤسسي (EMA200)",
+                f"كفاءة اتجاه واضحة ER={er_v:.2f} (خروج من التذبذب العشوائي)",
                 f"مؤشر RSI معتدل ({rsi_v:.1f}) وغير متضخم (< 75)",
                 f"نسبة العائد للمخاطرة 1:2.33 (وقف {stop_dist:.1f} نقطة)"
             ]
