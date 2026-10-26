@@ -75,35 +75,50 @@ def scan_us500_signals(df_15m: pd.DataFrame, df_1h: pd.DataFrame) -> List[US500S
         is_bull
     )
 
-    stop_pts = 8.0  # وقف تنفسي محكم 8 نقاط مطابق للأصل
-    tp_pts = 10.0   # هدف سريع 10 نقاط مطابق للأصل
+    # 3. إشارات الاختراق الاندفاعي المؤسسي في جلسة نيويورك (Momentum Expansion Breakout)
+    hr = row["time"].hour if hasattr(row["time"], "hour") else pd.to_datetime(t_str).hour
+    in_ny_session = 13 <= hr <= 20
+    vol_ratio = float(row.get("volume", 1.0)) / (float(df_15["volume"].rolling(20).mean().iloc[-1]) + 1e-9) if "volume" in df_15 else 1.2
+    vol_ok = vol_ratio >= 1.1
 
-    if put_confirm and atr_val > 0:
+    # اختراق صاعد مباشر: إغلاق أعلى قمة الـ 16 السابقة وشمعة ممتلئة داخل الجلسة
+    bull_momentum = (cur_px > float(hi16.iloc[-1])) and (cur_px > float(row["open"])) and in_ny_session and vol_ok and is_bull
+    # كسر هابط مباشر: إغلاق أدنى قاع الـ 16 السابقة وشمعة ممتلئة داخل الجلسة
+    bear_momentum = (cur_px < float(lo16.iloc[-1])) and (cur_px < float(row["open"])) and in_ny_session and vol_ok and is_bear
+
+    stop_pts = 8.0  # وقف تنفسي محكم 8 نقاط مطابق للأصل
+    tp_pts = 12.0   # هدف سريع 12 نقطة مثبت بالاختبار
+
+    if (put_confirm or bear_momentum) and atr_val > 0:
+        spec = "SNIPER_PUT_MOMENTUM" if bear_momentum and not put_confirm else "SNIPER_PUT_CONFIRM"
+        reason_txt = "اختراق بيعي اندفاعي مباشر مع سيولة جلسة نيويورك" if spec == "SNIPER_PUT_MOMENTUM" else "كنس قمة الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الكسر لأسفل"
         signals.append(US500Signal(
             asset="US500",
-            spec_id="SNIPER_PUT_CONFIRM",
+            spec_id=spec,
             side=-1,
             price=cur_px,
             stop_level=round(cur_px + stop_pts, 1),
             target_level=round(cur_px - tp_pts, 1),
             time=t_str,
             reasons=[
-                "كنس قمة الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الكسر لأسفل",
+                reason_txt,
                 "التوافق التام مع الاتجاه العام الهابط على فريم الساعة (أدنى من EMA50)",
                 f"الهدف السريع: {tp_pts} نقاط لتحقيق ربح متفجر وخروج آمن قبل الارتداد"
             ]
         ))
-    elif call_confirm and atr_val > 0:
+    elif (call_confirm or bull_momentum) and atr_val > 0:
+        spec = "SNIPER_CALL_MOMENTUM" if bull_momentum and not call_confirm else "SNIPER_CALL_CONFIRM"
+        reason_txt = "اختراق شرائي اندفاعي مباشر مع سيولة جلسة نيويورك (ركوب الصاروخ)" if spec == "SNIPER_CALL_MOMENTUM" else "كنس قاع الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الاختراق لأعلى"
         signals.append(US500Signal(
             asset="US500",
-            spec_id="SNIPER_CALL_CONFIRM",
+            spec_id=spec,
             side=1,
             price=cur_px,
             stop_level=round(cur_px - stop_pts, 1),
             target_level=round(cur_px + tp_pts, 1),
             time=t_str,
             reasons=[
-                "كنس قاع الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الاختراق لأعلى",
+                reason_txt,
                 "التوافق مع الاتجاه الصاعد على فريم الساعة (أعلى من EMA50)",
                 f"الهدف السريع: {tp_pts} نقاط لتحقيق ربح متفجر وخروج آمن قبل الارتداد"
             ]
