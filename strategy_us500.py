@@ -33,48 +33,80 @@ def compute_atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
 
 def scan_us500_signals(df_15m: pd.DataFrame, df_1h: pd.DataFrame) -> List[US500Signal]:
     signals: List[US500Signal] = []
-    if df_15m is None or len(df_15m) < 40 or df_1h is None or len(df_1h) < 40:
+    if df_15m is None or len(df_15m) < 25 or df_1h is None or len(df_1h) < 25:
         return signals
 
-    c_15, h_15, l_15, o_15 = df_15m["close"].astype(float), df_15m["high"].astype(float), df_15m["low"].astype(float), df_15m["open"].astype(float)
-    df_15m["atr"] = compute_atr(df_15m, 14)
-    df_15m["ema200"] = c_15.ewm(span=200, adjust=False).mean()
-    df_15m["lo20"] = l_15.rolling(20).min().shift(1)
-    df_15m["hi20"] = h_15.rolling(20).max().shift(1)
+    df_15 = df_15m.copy()
+    c_15 = df_15["close"].astype(float)
+    h_15 = df_15["high"].astype(float)
+    l_15 = df_15["low"].astype(float)
+    o_15 = df_15["open"].astype(float)
 
-    cur = df_15m.iloc[-1]
-    prev = df_15m.iloc[-2]
-    atr_val = float(cur["atr"])
-    cur_p = float(cur["close"])
+    df_15["atr"] = compute_atr(df_15, 14)
+    # أعلى قمة وأدنى قاع لآخر 16 شمعة مع إزاحة شمعتين للخلف لمطابقة الكنس وإعادة الاختبار الأصلية
+    hi16 = h_15.rolling(16).max().shift(2)
+    lo16 = l_15.rolling(16).min().shift(2)
 
-    # قنص كول: كنس قاع 20 شمعة وإغلاق أخضر فوق القاع والسعر فوق EMA200
-    call_sig = (cur["low"] < cur["lo20"]) and (cur["close"] > cur["lo20"]) and (cur["close"] > cur["open"]) and (cur["close"] > cur["ema200"])
-    # قنص بوت: كنس قمة 20 شمعة وإغلاق أحمر تحت القمة والسعر تحت EMA200
-    put_sig = (cur["high"] > cur["hi20"]) and (cur["close"] < cur["hi20"]) and (cur["close"] < cur["open"]) and (cur["close"] < cur["ema200"])
+    # اتجاه فريم الساعة الأساسي الحاسم (EMA50 1H)
+    c_1h = df_1h["close"].astype(float)
+    ema50_1h = float(c_1h.ewm(span=50, adjust=False).mean().iloc[-1])
 
-    if call_sig and not (prev["low"] < prev["lo20"] and prev["close"] > prev["lo20"]):
-        dist = max(3.0, cur_p - float(cur["low"]) + 0.2 * atr_val)
+    row = df_15.iloc[-1]
+    prev1 = df_15.iloc[-2]
+    cur_px = float(row["close"])
+    atr_val = float(row["atr"])
+    t_str = str(row.get("time", ""))
+
+    is_bear = cur_px < ema50_1h
+    is_bull = cur_px > ema50_1h
+
+    # 1. إشارة PUT بعد شمعة التأكيد الصريحة
+    put_confirm = (
+        (float(prev1["high"]) > float(hi16.iloc[-2])) and
+        (float(prev1["close"]) < float(prev1["open"])) and
+        (float(row["close"]) < float(prev1["low"])) and
+        is_bear
+    )
+    # 2. إشارة CALL بعد شمعة التأكيد الصريحة
+    call_confirm = (
+        (float(prev1["low"]) < float(lo16.iloc[-2])) and
+        (float(prev1["close"]) > float(prev1["open"])) and
+        (float(row["close"]) > float(prev1["high"])) and
+        is_bull
+    )
+
+    stop_pts = 8.0  # وقف تنفسي محكم 8 نقاط مطابق للأصل
+    tp_pts = 10.0   # هدف سريع 10 نقاط مطابق للأصل
+
+    if put_confirm and atr_val > 0:
         signals.append(US500Signal(
             asset="US500",
-            spec_id="US500_CALL",
-            side=1,
-            price=cur_p,
-            stop_level=round(cur_p - dist, 1),
-            target_level=round(cur_p + 1.8 * dist, 1),
-            time=str(cur.get("time", "")),
-            reasons=["كنس قاع 20 شمعة 15m لمؤشر US500", "إغلاق شمعة صاعدة قوية فوق القاع المكسور", "الاتجاه العام صاعد فوق EMA200"]
-        ))
-    elif put_sig and not (prev["high"] > prev["hi20"] and prev["close"] < prev["hi20"]):
-        dist = max(3.0, float(cur["high"]) - cur_p + 0.2 * atr_val)
-        signals.append(US500Signal(
-            asset="US500",
-            spec_id="US500_PUT",
+            spec_id="SNIPER_PUT_CONFIRM",
             side=-1,
-            price=cur_p,
-            stop_level=round(cur_p + dist, 1),
-            target_level=round(cur_p - 1.8 * dist, 1),
-            time=str(cur.get("time", "")),
-            reasons=["كنس قمة 20 شمعة 15m لمؤشر US500", "إغلاق شمعة هابطة قوية تحت القمة المكسورة", "الاتجاه العام هابط تحت EMA200"]
+            price=cur_px,
+            stop_level=round(cur_px + stop_pts, 1),
+            target_level=round(cur_px - tp_pts, 1),
+            time=t_str,
+            reasons=[
+                "كنس قمة الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الكسر لأسفل",
+                "التوافق التام مع الاتجاه العام الهابط على فريم الساعة (أدنى من EMA50)",
+                f"الهدف السريع: {tp_pts} نقاط لتحقيق ربح متفجر وخروج آمن قبل الارتداد"
+            ]
+        ))
+    elif call_confirm and atr_val > 0:
+        signals.append(US500Signal(
+            asset="US500",
+            spec_id="SNIPER_CALL_CONFIRM",
+            side=1,
+            price=cur_px,
+            stop_level=round(cur_px - stop_pts, 1),
+            target_level=round(cur_px + tp_pts, 1),
+            time=t_str,
+            reasons=[
+                "كنس قاع الساعات السابقة واكتمال شمعة إعادة الاختبار وتأكيد الاختراق لأعلى",
+                "التوافق مع الاتجاه الصاعد على فريم الساعة (أعلى من EMA50)",
+                f"الهدف السريع: {tp_pts} نقاط لتحقيق ربح متفجر وخروج آمن قبل الارتداد"
+            ]
         ))
 
     return signals
