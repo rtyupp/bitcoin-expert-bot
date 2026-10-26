@@ -23,6 +23,7 @@ import state
 import strategy as S
 import strategy_gold as SG
 import strategy_us500 as SU
+import strategy_us100 as SN
 import ai_profit_guardian as AIG
 import ai_smart_stop as AIS
 
@@ -45,8 +46,8 @@ def calculate_position_size(epic: str, entry_price: float, stop_loss_price: floa
     mkt = client.get_market_info(epic)
     min_size = mkt["min_deal_size"] if mkt else (0.0001 if epic == "BTCUSD" else 0.01)
 
-    if epic == "BTCUSD":
-        size = max(min_size, round(raw_size, 4))
+    if epic in ["BTCUSD", "US100"]:
+        size = max(min_size, round(raw_size, 4 if epic == "BTCUSD" else 3))
     else:
         size = max(min_size, round(raw_size, 2))
     return size
@@ -308,5 +309,25 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
                     logs.append(f"🇺🇸 تم فتح صفقة مؤشر أسهم جديدة [{usig.spec_id}] حجم {u_size} عقد.")
             else:
                 logs.append(f"🔔 إشارة US500 جديدة [{usig.spec_id}] (الآلي معطل).")
+
+    # 5. فحص إشارات مؤشر ناسداك (US100)
+    nasdaq_1h = client.get_prices("US100", resolution="HOUR", max_candles=100)
+    if nasdaq_1h:
+        nasdaq_sigs = SN.scan_nasdaq_signals(pd.DataFrame(nasdaq_1h))
+        for nsig in nasdaq_sigs:
+            if nsig.spec_id in active:
+                continue
+            n_dir = "BUY" if nsig.side == 1 else "SELL"
+            n_size = calculate_position_size("US100", nsig.price, nsig.stop_level, risk_pct)
+            if auto_trade_enabled:
+                ok, msg, deal_data = client.open_position(
+                    direction=n_dir, size=n_size, epic="US100",
+                    stop_level=nsig.stop_level, profit_level=nsig.target_level
+                )
+                if ok and deal_data:
+                    state.record_trade(nsig.spec_id, {**deal_data, "strat_name": nsig.spec_id, "asset": "US100"})
+                    logs.append(f"💻 تم فتح صفقة ناسداك جديدة [{nsig.spec_id}] حجم {n_size} عقد.")
+            else:
+                logs.append(f"🔔 إشارة ناسداك US100 جديدة [{nsig.spec_id}] (الآلي معطل).")
 
     return actions_taken, logs
