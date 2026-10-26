@@ -261,11 +261,16 @@ class CapitalClient:
 
     # ── 3. إدارة وتنفيذ الصفقات ───────────────────────────────────
 
-    def get_open_positions(self, epic: Optional[str] = config.EPIC) -> List[Dict[str, Any]]:
-        """جلب الصفقات المفتوحة حالياً."""
+    def get_open_positions(self, epic: Optional[str] = config.EPIC) -> Optional[List[Dict[str, Any]]]:
+        """جلب الصفقات المفتوحة حالياً.
+
+        يعيد None عند فشل الطلب (وليس قائمة فارغة) حتى لا يُفسَّر الفشل
+        على أنه "لا توجد صفقات" فتُلغى متابعة صفقات مفتوحة فعلياً.
+        epic=None يجلب صفقات جميع الأصول.
+        """
         resp = self._request("GET", "/positions")
         if not resp or resp.status_code != 200:
-            return []
+            return None
         data = resp.json()
         items = data.get("positions", [])
         res = []

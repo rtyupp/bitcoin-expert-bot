@@ -244,6 +244,9 @@ async def cmd_positions(m: Message):
         await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         positions = await asyncio.to_thread(client.get_open_positions, "BTCUSD")
+        if positions is None:
+            await m.answer("⚠️ تعذّر جلب الصفقات المفتوحة من Capital.com.", reply_markup=main_kb())
+            return
         if not positions:
             await m.answer("📭 لا توجد صفقات مفتوحة حالياً في الحساب.", reply_markup=main_kb())
             return
@@ -291,7 +294,7 @@ async def _execute_manual_trade(m: Message, direction: str):
 
         stop_loss = ref_px - 1.5 * atr_val if direction == "BUY" else ref_px + 1.5 * atr_val
         take_profit = ref_px + 3.0 * atr_val if direction == "BUY" else ref_px - 3.0 * atr_val
-        size = engine.calculate_position_size(ref_px, stop_loss, state.get_risk_pct())
+        size = engine.calculate_position_size("BTCUSD", ref_px, stop_loss, state.get_risk_pct())
 
         ok, msg, deal = await asyncio.to_thread(
             client.open_position,
