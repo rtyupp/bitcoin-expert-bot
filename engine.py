@@ -21,30 +21,32 @@ from capital_trader import client
 import config
 import state
 import strategy as S
+import strategy_gold as SG
+import strategy_us500 as SU
 
 log = logging.getLogger("engine")
 
-def calculate_position_size(entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
-    """حساب حجم العقد (بالبيتكوين) بناءً على الرصيد المتاح ونقطة الوقف."""
+def calculate_position_size(epic: str, entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
+    """حساب حجم العقد بناءً على الرصيد المتاح ونقطة الوقف لكل أصل."""
     acc = client.get_account_details()
     if not acc:
-        return 0.0001
+        return 0.0001 if epic == "BTCUSD" else 0.01
 
     available_balance = acc["available"]
     risk_amount = available_balance * (risk_pct / 100.0)
     stop_distance = abs(entry_price - stop_loss_price)
 
     if stop_distance <= 0:
-        return 0.0001
+        return 0.0001 if epic == "BTCUSD" else 0.01
 
-    # الحجم = المبلغ المعرض للخسارة / مسافة الوقف
     raw_size = risk_amount / stop_distance
+    mkt = client.get_market_info(epic)
+    min_size = mkt["min_deal_size"] if mkt else (0.0001 if epic == "BTCUSD" else 0.01)
 
-    mkt = client.get_market_info("BTCUSD")
-    min_size = mkt["min_deal_size"] if mkt else 0.0001
-    step = mkt["min_size_increment"] if mkt else 0.0001
-
-    size = max(min_size, round(raw_size, 4))
+    if epic == "BTCUSD":
+        size = max(min_size, round(raw_size, 4))
+    else:
+        size = max(min_size, round(raw_size, 2))
     return size
 
 def exit_reason_for(
@@ -204,7 +206,7 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
             continue
 
         direction = "BUY" if sig.side == 1 else "SELL"
-        size = calculate_position_size(sig.price, sig.stop_level, risk_pct)
+        size = calculate_position_size("BTCUSD", sig.price, sig.stop_level, risk_pct)
 
         trade_record = {
             "spec_id": spec_id,
@@ -242,5 +244,47 @@ def evaluate_and_trade() -> Tuple[List[Dict[str, Any]], List[str]]:
         else:
             actions_taken.append(trade_record)
             logs.append(f"🔔 رصدت إشارة جديدة [{sig.spec.name}] (التداول الآلي معطل).")
+
+    # 3. فحص إشارات الذهب (GOLD)
+    g_4h = client.get_prices("GOLD", resolution="HOUR_4", max_candles=200)
+    g_1d = client.get_prices("GOLD", resolution="DAY", max_candles=300)
+    if g_4h and g_1d:
+        gold_sigs = SG.scan_gold_signals(pd.DataFrame(g_4h), pd.DataFrame(g_1d))
+        for gsig in gold_sigs:
+            if gsig.spec_id in active:
+                continue
+            g_dir = "BUY" if gsig.side == 1 else "SELL"
+            g_size = calculate_position_size("GOLD", gsig.price, gsig.stop_level, risk_pct)
+            if auto_trade_enabled:
+                ok, msg, deal_data = client.open_position(
+                    direction=g_dir, size=g_size, epic="GOLD",
+                    stop_level=gsig.stop_level, profit_level=gsig.target_level
+                )
+                if ok and deal_data:
+                    state.record_trade(gsig.spec_id, {**deal_data, "strat_name": gsig.spec_id, "asset": "GOLD"})
+                    logs.append(f"🥇 تم فتح صفقة حقيقية جديدة بالذهب [{gsig.spec_id}] حجم {g_size} أونصة.")
+            else:
+                logs.append(f"🔔 إشارة ذهب جديدة [{gsig.spec_id}] (الآلي معطل).")
+
+    # 4. فحص إشارات مؤشر الأسهم الأمريكية (US500)
+    u_15m = client.get_prices("US500", resolution="MINUTE_15", max_candles=60)
+    u_1h = client.get_prices("US500", resolution="HOUR", max_candles=100)
+    if u_15m and u_1h:
+        us_sigs = SU.scan_us500_signals(pd.DataFrame(u_15m), pd.DataFrame(u_1h))
+        for usig in us_sigs:
+            if usig.spec_id in active:
+                continue
+            u_dir = "BUY" if usig.side == 1 else "SELL"
+            u_size = calculate_position_size("US500", usig.price, usig.stop_level, risk_pct)
+            if auto_trade_enabled:
+                ok, msg, deal_data = client.open_position(
+                    direction=u_dir, size=u_size, epic="US500",
+                    stop_level=usig.stop_level, profit_level=usig.target_level
+                )
+                if ok and deal_data:
+                    state.record_trade(usig.spec_id, {**deal_data, "strat_name": usig.spec_id, "asset": "US500"})
+                    logs.append(f"🇺🇸 تم فتح صفقة مؤشر أسهم جديدة [{usig.spec_id}] حجم {u_size} عقد.")
+            else:
+                logs.append(f"🔔 إشارة US500 جديدة [{usig.spec_id}] (الآلي معطل).")
 
     return actions_taken, logs

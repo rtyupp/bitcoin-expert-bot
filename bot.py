@@ -44,14 +44,14 @@ _chart_lock = asyncio.Lock()
 def main_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🪙 حالة البيتكوين"), KeyboardButton(text="🕯️ الشارت المباشر")],
+            [KeyboardButton(text="🪙 البيتكوين BTC"), KeyboardButton(text="🥇 الذهب GOLD")],
+            [KeyboardButton(text="🇺🇸 مؤشر US500"), KeyboardButton(text="🕯️ الشارت المباشر")],
             [KeyboardButton(text="💼 حساب كابيتال"), KeyboardButton(text="🎯 الصفقات المفتوحة")],
-            [KeyboardButton(text="🟢 شراء فوري"), KeyboardButton(text="🔴 بيع فوري")],
-            [KeyboardButton(text="⚙️ إعدادات التداول"), KeyboardButton(text="📊 التقرير والاستراتيجيات")],
+            [KeyboardButton(text="⚙️ إعدادات التداول"), KeyboardButton(text="📊 التقرير الشامل")],
             [KeyboardButton(text="❓ المساعدة")],
         ],
         resize_keyboard=True,
-        input_field_placeholder="اختر أمراً من القائمة 👇",
+        input_field_placeholder="اختر أصلاً أو أمراً من القائمة 👇",
     )
 
 # ── الأوامر الأساسية ──────────────────────────────────────────
@@ -59,23 +59,16 @@ def main_kb() -> ReplyKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(m: Message):
     txt = (
-        "👑 <b>بوت خبير البيتكوين المؤسسي (BTC Institutional Trader)</b>\n\n"
-        "محركان فقط، مُختاران بحثياً على 8.8 سنة (2018-2026) ومفحوصان على شموع مغلقة:\n\n"
-        "1️⃣ <b>سحابة إيشيموكو وبولينجر 4H (B):</b> ركوب الاتجاه المؤسسي. "
-        "وقف 0.75×ATR، هدف 8×ATR، وخروج شاندلير 4×ATR.\n"
-        "2️⃣ <b>قنص كنس السيولة SMC 4H (C):</b> اصطياد فخاخ الدببة عند القيعان. "
-        "وقف 1.5×ATR، هدف 4.5×ATR، وخروج تحت الدخول بـ2×ATR.\n\n"
+        "👑 <b>بوت التداول والمضاربة المتعدد للأصول (Multi-Asset Institutional Trader)</b>\n\n"
+        "نظام مؤسسي موحد يراقب ويقتنص الفرص في 3 أصول رئيسية معاً:\n\n"
+        "1️⃣ <b>البيتكوين (BTCUSD) [4H]:</b> سحابة إيشيموكو + كنس سيولة SMC (ركوب موجات +8R إلى +10R).\n"
+        "2️⃣ <b>الذهب (GOLD) [Daily/4H]:</b> ركوب ترندات الذهب المؤسسية (PF 4.80 ونمو تاريخي +88.8%).\n"
+        "3️⃣ <b>الأسهم الأمريكية (US500) [15m]:</b> قنص كول وبوت مع إعادة الاختبار وتدفقات الأوبشن.\n\n"
         "⚡ <b>الميزات الذكية:</b>\n"
-        "• تكامل كامل مع حساب <b>Capital.com</b> للتداول الحي والتجريبي.\n"
-        "• فحص دوري مستمر كل دقيقة مع إشارات على الشمعة المغلقة فقط.\n"
-        "• إدارة خروج تلقائية + تأمين الوقف عند +1.0R.\n"
-        "• فلتر جودة الشمعة: حجم ≥ متوسط 20 شمعة وإغلاق في النصف الأعلى من المدى.\n\n"
-        "📊 <b>نتائج كود المحرك (سبريد $50 + تمويل Capital.com):</b>\n"
-        "• 2018-2026: 101 صفقة | PF <b>5.89</b> | <b>+$1,177.01 (+592.5%)</b> | أقصى تراجع $26.03\n"
-        "• آخر 12 شهراً: 7 صفقات | PF 4.96 | +$20.76 (+10.4%)\n"
-        "• آخر 6 أشهر: 5 صفقات | PF 4.19 | +$15.74 (+7.9%)\n"
-        "• 12 من 15 نافذة 6 أشهر رابحة.\n\n"
-        "اختر من الأزرار بالأسفل للبدء 👇"
+        "• حساب واحد موحّد في <b>Capital.com Live</b> مع إدارة مخاطر منضبطة للمحفظة.\n"
+        "• فحص دوري مستمر لجميع الأصول على الشمعة المغلقة.\n"
+        "• تأمين الوقف التلقائي (Break-Even) عند تحقيق الأهداف الأولية.\n\n"
+        "اختر من الأزرار بالأسفل لاستعراض حالة الأسواق أو التحكم بالحساب 👇"
     )
     await m.answer(txt, reply_markup=main_kb())
 
@@ -93,6 +86,64 @@ async def cmd_help(m: Message):
         "الأوامر السريعة: /status, /chart, /capital, /positions, /autotrade, /risk"
     )
     await m.answer(txt, reply_markup=main_kb())
+
+@router.message(F.text == "🪙 البيتكوين BTC")
+async def cmd_status_btc(m: Message):
+    await cmd_status(m)
+
+@router.message(F.text == "🥇 الذهب GOLD")
+async def cmd_status_gold(m: Message):
+    if bot:
+        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        mkt = await asyncio.to_thread(client.get_market_info, "GOLD")
+        sent = await asyncio.to_thread(client.get_sentiment, "GOLD")
+    except Exception as e:
+        await m.answer(f"❌ تعذّر جلب حالة الذهب: {html.escape(str(e))}")
+        return
+
+    bid = mkt.get("bid", 0.0) if mkt else 0.0
+    offer = mkt.get("offer", 0.0) if mkt else 0.0
+    spread = mkt.get("spread", 0.0) if mkt else 0.0
+    long_sent = sent.get("long_pct", 50.0) if sent else 50.0
+    short_sent = sent.get("short_pct", 50.0) if sent else 50.0
+
+    txt = (
+        "🥇 <b>حالة الذهب الفوري (GOLD / USD):</b>\n\n"
+        f"• سعر الشراء (Ask): <b>${offer:,.2f}</b>\n"
+        f"• سعر البيع (Bid): <b>${bid:,.2f}</b>\n"
+        f"• السبريد: <b>${spread:.2f}</b>\n"
+        f"• معنويات المتداولين: شراء <b>{long_sent:.1f}%</b> | بيع <b>{short_sent:.1f}%</b>\n\n"
+        "🏛️ <b>الاستراتيجية النشطة:</b> ركوب ترند 20 يوماً فوق EMA200 المؤسسي + قنص سيولة 4H."
+    )
+    await m.answer(txt)
+
+@router.message(F.text == "🇺🇸 مؤشر US500")
+async def cmd_status_us500(m: Message):
+    if bot:
+        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        mkt = await asyncio.to_thread(client.get_market_info, "US500")
+        sent = await asyncio.to_thread(client.get_sentiment, "US500")
+    except Exception as e:
+        await m.answer(f"❌ تعذّر جلب حالة US500: {html.escape(str(e))}")
+        return
+
+    bid = mkt.get("bid", 0.0) if mkt else 0.0
+    offer = mkt.get("offer", 0.0) if mkt else 0.0
+    spread = mkt.get("spread", 0.0) if mkt else 0.0
+    long_sent = sent.get("long_pct", 50.0) if sent else 50.0
+    short_sent = sent.get("short_pct", 50.0) if sent else 50.0
+
+    txt = (
+        "🇺🇸 <b>حالة مؤشر S&P 500 (US500):</b>\n\n"
+        f"• سعر الشراء (Ask): <b>{offer:,.1f}</b>\n"
+        f"• سعر البيع (Bid): <b>{bid:,.1f}</b>\n"
+        f"• السبريد: <b>{spread:.1f} نقطة</b>\n"
+        f"• معنويات المتداولين: شراء <b>{long_sent:.1f}%</b> | بيع <b>{short_sent:.1f}%</b>\n\n"
+        "🎯 <b>الاستراتيجية النشطة:</b> قنص كول/بوت مع إعادة الاختبار 15m وتدفقات السيولة."
+    )
+    await m.answer(txt)
 
 # ── حالة السوق والشارت ────────────────────────────────────────
 
