@@ -1,50 +1,20 @@
-"""نواة استراتيجيات البيتكوين المؤسسية المتكيفة (Bitcoin Institutional Adaptive Strategies).
-
-المحركان الفعّالان (مفحوصان على شموع مغلقة فقط):
-1. [B] سحابة إيشيموكو وبولينجر 4H (Jesse Ichimoku Cloud Breakout) — ركوب الاتجاه،
-   وقف 0.75×ATR، هدف 8×ATR، وخروج شاندلير 4×ATR.
-2. [C] قنص كنس السيولة 4H (SMC Liquidity Sweep) — اصطياد فخاخ الدببة عند كسر القيعان،
-   وقف 1.5×ATR، هدف 4.5×ATR، وخروج تحت الدخول بـ2×ATR.
-
-فلتر جودة الشمعة (مشترك): لا يُقبل الدخول إلا إذا كان حجم شمعة الإشارة ≥ متوسط
-آخر 20 شمعة 4H، وكان الإغلاق في النصف الأعلى من مداها. أضافه بحث 2026 بعد أن
-رفع PF من 4.23 إلى 5.89 وCAGR من 22.2% إلى 24.5% مع خفض التراجع، وتجاوز
-100% من العينات العشوائية بنفس عدد الصفقات.
-
-[A] دونشيان 55 يوم معطّلة بعد أن أثبت البحث (2304 إعداد + تحقق خارج العينة) أن
-إسقاطها يرفع Calmar من 18.9 إلى 31.8 ويحوّل آخر 6 أشهر من خسارة إلى ربح.
-[D] الحيتان أُخرجت سابقاً (-25.6$، PF 0.75 على 8.8 سنة)، والبيع أُلغي لأن
-المحفظة الطويلة فقط كانت أفضل عائداً/مخاطرة. التفاصيل في optimize.py و README.
-"""
+"""Strategy Module: Validated 4H Institutional Edge for GBP/USD, Gold, and Silver."""
 from __future__ import annotations
 
-import dataclasses
+import math
 from dataclasses import dataclass, field
-import pandas as pd
+from typing import List, Tuple
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+import pandas as pd
+from ta.trend import EMAIndicator, MACD, ADXIndicator
+from ta.volatility import AverageTrueRange, DonchianChannel
 
-from capital_trader import client
+import config
 
-@dataclass
-class StrategySpec:
-    id: str
-    name: str
-    timeframe: str
-    rr: float
-    description: str
-
-SPECS: Dict[str, StrategySpec] = {
-    "A": StrategySpec("A", "الانفجار الشهري المؤسسي (Donchian 55)", "1d", 1.67, "ركوب موجات الصعود الكبرى بالبيتكوين عند كسر قمة 55 يوماً فوق EMA200 (معطّلة حالياً)"),
-    "B": StrategySpec("B", "سحابة إيشيموكو وبولينجر 4H (Long Trend)", "4h", 10.67, "ركوب الاتجاه الصاعد فوق متوسط 200، وقف 0.75×ATR وهدف 8×ATR وخروج شاندلير 4×ATR"),
-    "C": StrategySpec("C", "قنص كنس السيولة SMC 30-Bar", "4h", 3.0, "اصطياد فخاخ الدببة وكنس قاع 30 شمعة ثم الارتداد"),
-}
-
-# المحركات المفعّلة فعلياً في المسح الحي (البحث أثبت تفوّق إسقاط A).
-ACTIVE_SPECS: Tuple[str, ...] = ("B", "C")
 
 @dataclass
-class Signal:
+class AssetSignal:
+    asset: str
     spec_id: str
     side: int  # 1 = BUY, -1 = SELL
     price: float
@@ -52,163 +22,304 @@ class Signal:
     target_level: float
     time: str
     reasons: List[str] = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
 
-    @property
-    def spec(self) -> StrategySpec:
-        return SPECS[self.spec_id]
 
 def compute_atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
-    h, l, c = df["high"], df["low"], df["close"]
-    tr = np.maximum(h - l, np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1))))
-    return tr.rolling(n).mean()
+    h, l, c = df["high"].astype(float), df["low"].astype(float), df["close"].astype(float)
+    return AverageTrueRange(h, l, c, n).average_true_range()
 
-def compute_indicators_4h(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    c, h, l, o = df["close"], df["high"], df["low"], df["open"]
-    df["atr"] = compute_atr(df, 14)
-    df["ema50"] = c.ewm(span=50, adjust=False).mean()
-    df["ema100"] = c.ewm(span=100, adjust=False).mean()
-    df["ema200"] = c.ewm(span=200, adjust=False).mean()
 
-    # Bollinger Bands
-    df["ma20"] = c.rolling(20).mean()
-    std20 = c.rolling(20).std()
-    # فلتر جودة الشمعة: حجم فوق متوسط آخر 20 شمعة (بدون الشمعة الحالية) وإغلاق قوي
-    df["vol_ma20_prev"] = df["volume"].rolling(20).mean().shift(1)
-    bar_range = (h - l).replace(0, np.nan)
-    df["bar_pos"] = ((c - l) / bar_range).fillna(0.5)
-    df["bb_upper"] = df["ma20"] + 2.0 * std20
-    df["bb_lower"] = df["ma20"] - 2.0 * std20
+def compute_adx(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    h, l, c = df["high"].astype(float), df["low"].astype(float), df["close"].astype(float)
+    return ADXIndicator(h, l, c, n).adx()
 
-    # Ichimoku Cloud
-    tenkan = (h.rolling(9).max() + l.rolling(9).min()) / 2
-    kijun = (h.rolling(26).max() + l.rolling(26).min()) / 2
-    df["span_a"] = ((tenkan + kijun) / 2).shift(26)
-    df["span_b"] = ((h.rolling(52).max() + l.rolling(52).min()) / 2).shift(26)
 
-    # SMC 30-Bar Low/High (النافذة الذهبية الأعلى ربحاً)
-    df["lo30"] = l.rolling(30).min().shift(1)
-    df["hi30"] = h.rolling(30).max().shift(1)
+def compute_er(df: pd.DataFrame, n: int = 16) -> pd.Series:
+    c = df["close"].astype(float)
+    change = (c - c.shift(n)).abs()
+    volatility = (c - c.shift(1)).abs().rolling(n).sum()
+    return change / (volatility + 1e-9)
 
-    return df
 
-def compute_indicators_1h(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    c, h, l = df["close"], df["high"], df["low"]
-    df["atr"] = compute_atr(df, 14)
+def compute_volume_ratio(df: pd.DataFrame, n: int = 20) -> pd.Series:
+    vol = df["volume"].astype(float)
+    vol_ma = vol.rolling(n).mean()
+    return vol / (vol_ma + 1e-9)
 
-    # ADX
-    tr = np.maximum(h - l, np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1))))
-    plus_dm = (h - h.shift(1)).clip(lower=0)
-    minus_dm = (l.shift(1) - l).clip(lower=0)
-    tr_14 = tr.rolling(14).sum()
-    plus_di = 100 * (plus_dm.rolling(14).sum() / (tr_14 + 1e-9))
-    minus_di = 100 * (minus_dm.rolling(14).sum() / (tr_14 + 1e-9))
-    dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9))
-    df["adx"] = dx.rolling(14).mean()
 
-    # Bollinger Bands
-    ma20 = c.rolling(20).mean()
-    std20 = c.rolling(20).std()
-    df["bb_upper"] = ma20 + 2.0 * std20
-    df["bb_lower"] = ma20 - 2.0 * std20
-    return df
+def compute_macd(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    m = MACD(df["close"].astype(float))
+    return m.macd(), m.macd_signal(), m.macd_diff()
 
-def compute_indicators_1d(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    c, h = df["close"], df["high"]
-    df["atr"] = compute_atr(df, 14)
-    df["ema50"] = c.ewm(span=50, adjust=False).mean()
-    df["ema200"] = c.ewm(span=200, adjust=False).mean()
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-    df["hi55"] = h.rolling(55).max().shift(1)
-    return df
 
-def scan_signals(df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame) -> List[Signal]:
-    """فحص الشموع الأخيرة المغلقة واكتشاف الفرص الحقيقية."""
-    signals = []
+def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
+    return EMAIndicator(df["close"].astype(float), period).ema_indicator()
 
-    # 1. فحص إشارات 4H
-    h4 = compute_indicators_4h(df_4h)
-    d1 = compute_indicators_1d(df_1d)
 
-    cur_4h = h4.iloc[-1]
-    prev_4h = h4.iloc[-2]
-    cur_d1 = d1.iloc[-1]
+def compute_donchian(df: pd.DataFrame, n: int = 20) -> Tuple[pd.Series, pd.Series]:
+    h, l, c = df["high"].astype(float), df["low"].astype(float), df["close"].astype(float)
+    dc = DonchianChannel(h, l, c, n)
+    return dc.donchian_channel_hband().shift(1), dc.donchian_channel_lband().shift(1)
 
-    d_bull = cur_d1["close"] > cur_d1["ema50"]
 
-    # [B] سحابة إيشيموكو وبولينجر 4H (Long-Only مع فلتر نظام السوق اليومي ومعنويات القطيع)
-    # السر الأسطوري: رفع عتبة قوة الاتجاه الصافي ADX >= 25 لمنع صفقات التذبذب الخامل
-    c_s = h4["close"]
-    net_c = abs(c_s - c_s.shift(14))
-    noise = abs(c_s - c_s.shift(1)).rolling(14).sum()
-    er_val = float((net_c / (noise + 1e-9)).iloc[-1])
+def detect_regime(df_4h: pd.DataFrame) -> Tuple[str, dict]:
+    if len(df_4h) < 50:
+        return "UNKNOWN", {}
 
-    # حساب تدفق السيولة MFI
-    typ = (h4["high"] + h4["low"] + h4["close"]) / 3
-    raw_m = typ * h4["volume"]
-    pos_m = pd.Series(np.where(typ > typ.shift(1), raw_m, 0.0)).rolling(14).sum()
-    neg_m = pd.Series(np.where(typ < typ.shift(1), raw_m, 0.0)).rolling(14).sum()
-    mfi_series = 100 - (100 / (1 + (pos_m / (neg_m + 1e-9))))
-    mfi_val = float(mfi_series.iloc[-1])
+    adx_series = compute_adx(df_4h, 14)
+    er_series = compute_er(df_4h, 16)
+    ema20_series = compute_ema(df_4h, 20)
+    ema50_series = compute_ema(df_4h, 50)
+    ema200_series = compute_ema(df_4h, 200)
 
-    # حساب ADX 4H
-    tr4_s = np.maximum(h4["high"] - h4["low"], np.maximum(abs(h4["high"] - c_s.shift(1)), abs(h4["low"] - c_s.shift(1))))
-    p_dm = (h4["high"] - h4["high"].shift(1)).clip(lower=0)
-    m_dm = (h4["low"].shift(1) - h4["low"]).clip(lower=0)
-    tr_sum = tr4_s.rolling(14).sum()
-    p_di = 100 * (p_dm.rolling(14).sum() / (tr_sum + 1e-9))
-    m_di = 100 * (m_dm.rolling(14).sum() / (tr_sum + 1e-9))
-    adx_4h_val = float((100 * (abs(p_di - m_di) / (p_di + m_di + 1e-9))).rolling(14).mean().iloc[-1])
+    adx = adx_series.iloc[-1]
+    er = er_series.iloc[-1]
+    ema20 = ema20_series.iloc[-1]
+    ema50 = ema50_series.iloc[-1]
+    ema200 = ema200_series.iloc[-1]
+    close = df_4h["close"].iloc[-1]
 
-    # فلتر الدايفرجنس السلبي: السعر يخترق قمة لكن تدفق السيولة MFI هابط (تصريف حيتان)
-    highest_mfi_20 = float(mfi_series.rolling(20).max().shift(1).iloc[-1])
-    is_mfi_divergence = (cur_4h["close"] > float(h4["high"].rolling(20).max().shift(1).iloc[-1])) and (mfi_val < highest_mfi_20 - 5.0)
+    metrics = {
+        "adx": round(float(adx), 1) if not np.isnan(adx) else 0,
+        "er": round(float(er), 3) if not np.isnan(er) else 0,
+        "ema20": float(ema20),
+        "ema50": float(ema50),
+        "ema200": float(ema200),
+        "close": float(close),
+    }
 
-    # فلتر جودة الشمعة: حجم تداول فوق متوسط آخر 20 شمعة وإغلاق في النصف الأعلى من المدى
-    quality_bar = (cur_4h["volume"] >= cur_4h["vol_ma20_prev"]) and (cur_4h["bar_pos"] >= 0.5)
+    if np.isnan(adx) or np.isnan(er):
+        return "UNKNOWN", metrics
 
-    # 1. صفقات الترند المؤسسي الصاعد (Jesse Bull) — طويل فقط
-    # شرط إضافي: الإغلاق اليومي فوق EMA50 اليومي (فلتر نظام السوق)
-    jesse_buy = (cur_4h["close"] > cur_4h["bb_upper"]) and (cur_4h["close"] > cur_4h["span_a"]) and (cur_4h["close"] > cur_4h["span_b"]) and (cur_4h["close"] > cur_4h["ema200"]) and d_bull and (adx_4h_val >= 25.0) and (er_val >= 0.30) and (mfi_val >= 50.0) and (not is_mfi_divergence) and quality_bar
+    if close > ema200 and ema20 > ema50 and er >= 0.25:
+        return "TRENDING_UP", metrics
+    elif close < ema200 and ema20 < ema50 and er >= 0.25:
+        return "TRENDING_DOWN", metrics
+    elif er < 0.20 and adx < 20:
+        return "RANGING", metrics
+    else:
+        return "CHOPPY", metrics
 
-    if jesse_buy and not ((prev_4h["close"] > prev_4h["bb_upper"]) and (prev_4h["close"] > prev_4h["span_a"])):
-        entry = float(cur_4h["close"])
-        atr_val = float(cur_4h["atr"])
-        signals.append(Signal(
-            spec_id="B", side=1, price=entry,
-            stop_level=round(entry - 0.75 * atr_val, 2),
-            target_level=round(entry + 8.0 * atr_val, 2),
-            time=str(cur_4h["time"]),
-            reasons=["اختراق سحابة إيشيموكو وبولينجر 4H للأعلى", "السعر فوق EMA200 4H واليومي فوق EMA50 (نظام صاعد)", "زخم مؤسسي قوي وتدفق سيولة إيجابي", "حجم فوق المتوسط وإغلاق في النصف الأعلى من الشمعة"]
+
+def scan_donchian20_vol15(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSignal]:
+    signals: List[AssetSignal] = []
+    if len(df_4h) < 50:
+        return signals
+
+    dc_upper, dc_lower = compute_donchian(df_4h, 20)
+    atr = compute_atr(df_4h, 14)
+    vol_ratio = compute_volume_ratio(df_4h, 20)
+    regime, metrics = detect_regime(df_4h)
+
+    if regime not in ("TRENDING_UP", "TRENDING_DOWN"):
+        return signals
+
+    i = -2
+    close = df_4h["close"].iloc[i]
+    vol_r = vol_ratio.iloc[i]
+    atr_v = atr.iloc[i]
+
+    if np.isnan(atr_v) or atr_v <= 0 or np.isnan(vol_r):
+        return signals
+
+    rr = asset_cfg["rr"]
+    stop_mult = asset_cfg["stop_mult"]
+    vol_thresh = asset_cfg["volume_mult"]
+    decimals = asset_cfg["decimals"]
+
+    if close > dc_upper.iloc[i] and vol_r > vol_thresh:
+        entry = close
+        stop = entry - stop_mult * atr_v
+        target = entry + rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="donchian20_vol15",
+            side=1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"Donchian 20 Breakout UP ({entry:.5f} > {dc_upper.iloc[i]:.5f})",
+                f"Volume Confirmation: {vol_r:.2f}x (Threshold {vol_thresh}x)",
+                f"Regime: {regime} (ADX={metrics['adx']}, ER={metrics['er']})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "vol_ratio": round(float(vol_r), 2)}
         ))
-
-    # [C] SMC Liquidity Sweep 30-bar 4H
-    smc_buy = (cur_4h["low"] < cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["lo30"]) and (cur_4h["close"] > cur_4h["open"]) and (cur_4h["close"] > cur_4h["ema100"]) and (cur_4h["close"] > cur_4h["ema200"]) and quality_bar
-    if smc_buy and not (prev_4h["low"] < prev_4h["lo30"] and prev_4h["close"] > prev_4h["lo30"]):
-        entry = float(cur_4h["close"])
-        atr_val = float(cur_4h["atr"])
-        signals.append(Signal(
-            spec_id="C", side=1, price=entry,
-            stop_level=round(entry - 1.5 * atr_val, 2),
-            target_level=round(entry + 4.5 * atr_val, 2),
-            time=str(cur_4h["time"]),
-            reasons=["كنس سيولة عميق (كسر قاع 30 شمعة 4H ثم ارتداد قوي)", "إغلاق شمعة 4H خضراء فوق مستوى القاع المكسور", "السعر فوق EMA100 وEMA200 المؤسسيين", "حجم فوق المتوسط وإغلاق في النصف الأعلى من الشمعة"]
-        ))
-
-    # [A] الانفجار الشهري المؤسسي (Donchian 55 Daily Breakout) — معطّلة
-    prev_d1 = d1.iloc[-2]
-    don_buy = (cur_d1["close"] > cur_d1["hi55"]) and (cur_d1["close"] > cur_d1["ema200"])
-    if "A" in ACTIVE_SPECS and don_buy and not (prev_d1["close"] > prev_d1["hi55"]):
-        entry = float(cur_d1["close"])
-        atr_val = float(cur_d1["atr"])
-        signals.append(Signal(
-            spec_id="A", side=1, price=entry,
-            stop_level=round(entry - 3.0 * atr_val, 2),
-            target_level=round(entry + 5.0 * atr_val, 2),
-            time=str(cur_d1["time"]),
-            reasons=["اختراق قمة 55 يوماً التاريخية (الانفجار الشهري)", "السعر أعلى من متوسط 200 يوم المؤسسي", "وقف 3×ATR وهدف 5×ATR"]
+    elif close < dc_lower.iloc[i] and vol_r > vol_thresh:
+        entry = close
+        stop = entry + stop_mult * atr_v
+        target = entry - rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="donchian20_vol15",
+            side=-1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"Donchian 20 Breakout DOWN ({entry:.5f} < {dc_lower.iloc[i]:.5f})",
+                f"Volume Confirmation: {vol_r:.2f}x (Threshold {vol_thresh}x)",
+                f"Regime: {regime} (ADX={metrics['adx']}, ER={metrics['er']})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "vol_ratio": round(float(vol_r), 2)}
         ))
 
     return signals
+
+
+def scan_macd_ema200(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSignal]:
+    signals: List[AssetSignal] = []
+    if len(df_4h) < 50:
+        return signals
+
+    macd_line, signal_line, _ = compute_macd(df_4h)
+    ema200 = compute_ema(df_4h, 200)
+    atr = compute_atr(df_4h, 14)
+    regime, metrics = detect_regime(df_4h)
+
+    if regime not in ("TRENDING_UP", "TRENDING_DOWN"):
+        return signals
+
+    i = -2
+    close = df_4h["close"].iloc[i]
+    atr_v = atr.iloc[i]
+    macd_curr = macd_line.iloc[i]
+    macd_prev = macd_line.iloc[i-1]
+    sig_curr = signal_line.iloc[i]
+    sig_prev = signal_line.iloc[i-1]
+    ema200_v = ema200.iloc[i]
+
+    if np.isnan(atr_v) or atr_v <= 0 or np.isnan(macd_curr) or np.isnan(sig_curr) or np.isnan(ema200_v):
+        return signals
+
+    rr = asset_cfg["rr"]
+    stop_mult = asset_cfg["stop_mult"]
+    decimals = asset_cfg["decimals"]
+
+    if macd_prev <= sig_prev and macd_curr > sig_curr and close > ema200_v:
+        entry = close
+        stop = entry - stop_mult * atr_v
+        target = entry + rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="macd_ema200",
+            side=1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"MACD Bullish Cross: {macd_curr:.5f} > {sig_curr:.5f}",
+                f"Macro Filter: Close {close:.2f} > EMA200 {ema200_v:.2f}",
+                f"Regime: {regime} (ADX={metrics['adx']}, ER={metrics['er']})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals)}
+        ))
+    elif macd_prev >= sig_prev and macd_curr < sig_curr and close < ema200_v:
+        entry = close
+        stop = entry + stop_mult * atr_v
+        target = entry - rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="macd_ema200",
+            side=-1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"MACD Bearish Cross: {macd_curr:.5f} < {sig_curr:.5f}",
+                f"Macro Filter: Close {close:.2f} < EMA200 {ema200_v:.2f}",
+                f"Regime: {regime} (ADX={metrics['adx']}, ER={metrics['er']})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals)}
+        ))
+
+    return signals
+
+
+STRATEGY_SCANNERS = {
+    "donchian20_vol15": scan_donchian20_vol15,
+    "macd_ema200": scan_macd_ema200,
+}
+
+
+def calculate_position_size(asset: str, entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
+    from capital import client
+    acc = client.account_summary()
+    available_balance = float(acc.get("available") or 1000.0)
+    risk_amount = available_balance * (risk_pct / 100.0)
+    stop_distance = abs(entry_price - stop_loss_price)
+    min_size = config.ASSETS[asset]["min_deal"]
+
+    if stop_distance <= 0:
+        return min_size
+
+    raw_size = risk_amount / stop_distance
+    if asset in ("GBPUSD",):
+        return max(min_size, round(raw_size, 0))
+    elif asset == "GOLD":
+        return max(min_size, round(raw_size, 2))
+    elif asset == "SILVER":
+        return max(min_size, round(raw_size, 1))
+    return max(min_size, round(raw_size, 2))
+
+
+def check_exit(asset: str, spec_id: str, side: int, entry: float, stop: float,
+               peak: float, current_close: float, atr: float, entry_candle: str, last_candle: str) -> str | None:
+    if asset == "GBPUSD":
+        if side == 1 and atr > 0 and current_close < peak - 4.0 * atr:
+            return "إغلاق تحت القمة بمقدار 4×ATR (شاندلير)"
+        if side == -1 and atr > 0 and current_close > peak + 4.0 * atr:
+            return "إغلاق فوق القاع بمقدار 4×ATR (شاندلير)"
+    else:
+        if side == 1 and atr > 0 and current_close < entry - 2.0 * atr:
+            return "إغلاق تحت الدخول بمقدار 2×ATR"
+        if side == -1 and atr > 0 and current_close > entry + 2.0 * atr:
+            return "إغلاق فوق الدخول بمقدار 2×ATR"
+    return None
+
+
+def get_asset_summary(df_4h: pd.DataFrame, asset_cfg: dict) -> dict:
+    if len(df_4h) < 50:
+        return {"error": "بيانات غير كافية"}
+
+    regime, metrics = detect_regime(df_4h)
+    close = df_4h["close"].iloc[-1]
+    atr = compute_atr(df_4h, 14).iloc[-1]
+    decimals = asset_cfg["decimals"]
+
+    extra = {}
+    if asset_cfg["strategy"] == "donchian20_vol15":
+        dc_upper, dc_lower = compute_donchian(df_4h, 20)
+        vol_r = compute_volume_ratio(df_4h, 20).iloc[-1]
+        extra = {
+            "dc_upper": round(float(dc_upper.iloc[-1]), decimals),
+            "dc_lower": round(float(dc_lower.iloc[-1]), decimals),
+            "vol_ratio": round(float(vol_r), 2),
+            "vol_threshold": asset_cfg["volume_mult"],
+        }
+    elif asset_cfg["strategy"] == "macd_ema200":
+        m_line, s_line, hist = compute_macd(df_4h)
+        e200 = compute_ema(df_4h, 200).iloc[-1]
+        extra = {
+            "macd": round(float(m_line.iloc[-1]), 5),
+            "signal": round(float(s_line.iloc[-1]), 5),
+            "histogram": round(float(hist.iloc[-1]), 5),
+            "ema200": round(float(e200), decimals),
+        }
+
+    return {
+        "asset": asset_cfg["name"],
+        "epic": asset_cfg["epic"],
+        "price": round(float(close), decimals),
+        "regime": regime,
+        "atr": round(float(atr), decimals) if not np.isnan(atr) else 0,
+        "adx": metrics.get("adx", 0),
+        "er": metrics.get("er", 0),
+        "strategy": asset_cfg["strategy"],
+        **extra,
+    }

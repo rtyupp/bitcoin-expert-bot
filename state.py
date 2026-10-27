@@ -1,113 +1,110 @@
-"""إدارة وتخزين حالة الصفقات والتداول والتحكم التلقائي."""
+"""State persistence module for Multi-Asset Bot."""
 from __future__ import annotations
 
 import json
-import logging
-import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any
 
-log = logging.getLogger("state")
-_STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
-_LOCK = threading.Lock()
+import config
 
-DEFAULT_STATE: Dict[str, Any] = {
-    "auto_trade": True,
-    "risk_pct": 1.0,
-    "active_trades": {},  # مفتاح: spec_id -> {deal_id, direction, entry, stop, tp, moved_be}
-    "history": [],
-    "last_check_ts": 0,
-}
+_lock = threading.Lock()
 
-def load_state() -> Dict[str, Any]:
-    with _LOCK:
-        if not os.path.exists(_STATE_FILE):
-            return dict(DEFAULT_STATE)
+
+def _default_state() -> dict:
+    return {
+        "auto_trade": config.CAPITAL_AUTO_TRADE,
+        "risk_pct": config.DEFAULT_RISK_PCT,
+        "active_trades": {},
+        "signal_cooldowns": {},
+    }
+
+
+def load_state() -> dict:
+    p = Path(config.STATE_FILE)
+    if p.exists():
         try:
-            with open(_STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {**DEFAULT_STATE, **data}
-        except Exception as e:
-            log.error(f"خطأ في قراءة state.json: {e}")
-            return dict(DEFAULT_STATE)
+            with _lock:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            default = _default_state()
+            for k, v in default.items():
+                data.setdefault(k, v)
+            return data
+        except Exception:
+            pass
+    return _default_state()
 
-def save_state(state: Dict[str, Any]):
-    with _LOCK:
-        try:
-            with open(_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log.error(f"خطأ في كتابة state.json: {e}")
 
-def set_auto_trade(enabled: bool) -> bool:
-    st = load_state()
-    st["auto_trade"] = bool(enabled)
-    save_state(st)
-    return st["auto_trade"]
+def save_state(state: dict) -> None:
+    p = Path(config.STATE_FILE)
+    try:
+        with _lock:
+            p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
-def is_auto_trade() -> bool:
-    return bool(load_state().get("auto_trade", True))
 
-def set_risk_pct(pct: float) -> float:
-    st = load_state()
-    st["risk_pct"] = max(0.1, min(5.0, float(pct)))
-    save_state(st)
-    return st["risk_pct"]
+def get_active_trades(state: dict) -> dict:
+    return state.get("active_trades", {})
 
-def get_risk_pct() -> float:
-    return float(load_state().get("risk_pct", 1.0))
 
-def record_trade(spec_id: str, deal_data: Dict[str, Any]):
-    st = load_state()
-    st["active_trades"][spec_id] = {
+def record_trade(state: dict, spec_id: str, deal_data: dict) -> None:
+    if "active_trades" not in state:
+        state["active_trades"] = {}
+    state["active_trades"][spec_id] = {
         **deal_data,
-        "spec_id": spec_id,
-        "timestamp": time.time(),
-        "moved_be": bool(deal_data.get("moved_be", False)),
+        "opened_at": time.time(),
+        "moved_be": False,
+        "peak": deal_data.get("peak"),
     }
-    save_state(st)
+    save_state(state)
 
-def update_trade(spec_id: str, **fields) -> bool:
-    """تحديث حقول صفقة قائمة دون المساس ببقية الحقول (مثل moved_be)."""
-    st = load_state()
-    tr = st["active_trades"].get(spec_id)
-    if not tr:
-        return False
-    tr.update(fields)
-    save_state(st)
-    return True
 
-def remove_trade(spec_id: str):
-    st = load_state()
-    if spec_id in st["active_trades"]:
-        del st["active_trades"][spec_id]
-        save_state(st)
+def update_trade(state: dict, spec_id: str, **kwargs) -> None:
+    if spec_id in state.get("active_trades", {}):
+        state["active_trades"][spec_id].update(kwargs)
+        save_state(state)
 
-def close_trade(
-    spec_id: str,
-    reason: str,
-    exit_price: Optional[float] = None,
-    pnl: Optional[float] = None,
-) -> bool:
-    """إغلاق متابعة صفقة وتسجيلها في السجل التاريخي (history)."""
-    st = load_state()
-    tr = st["active_trades"].get(spec_id)
-    if not tr:
-        return False
-    record = {
-        **tr,
-        "exit_reason": reason,
-        "exit_price": exit_price,
-        "pnl": pnl,
-        "closed_at": time.time(),
-    }
-    history = list(st.get("history", []))
-    history.append(record)
-    st["history"] = history[-200:]
-    del st["active_trades"][spec_id]
-    save_state(st)
-    return True
 
-def get_active_trades() -> Dict[str, Any]:
-    return load_state().get("active_trades", {})
+def close_trade(state: dict, spec_id: str, reason: str = "", exit_price: float = 0.0, pnl: float = 0.0) -> dict | None:
+    trade = state.get("active_trades", {}).pop(spec_id, None)
+    if trade:
+        trade.update({
+            "closed_at": time.time(),
+            "close_reason": reason,
+            "exit_price": exit_price,
+            "pnl": pnl,
+        })
+        save_state(state)
+    return trade
+
+
+def is_auto_trade(state: dict) -> bool:
+    return bool(state.get("auto_trade", config.CAPITAL_AUTO_TRADE))
+
+
+def set_auto_trade(state: dict, enabled: bool) -> None:
+    state["auto_trade"] = bool(enabled)
+    save_state(state)
+
+
+def get_risk_pct(state: dict) -> float:
+    return float(state.get("risk_pct", config.DEFAULT_RISK_PCT))
+
+
+def set_risk_pct(state: dict, pct: float) -> None:
+    state["risk_pct"] = float(pct)
+    save_state(state)
+
+
+def check_signal_cooldown(state: dict, asset: str, cooldown_min: int) -> bool:
+    last_ts = state.get("signal_cooldowns", {}).get(asset, 0.0)
+    return (time.time() - last_ts) >= (cooldown_min * 60)
+
+
+def set_signal_cooldown(state: dict, asset: str) -> None:
+    if "signal_cooldowns" not in state:
+        state["signal_cooldowns"] = {}
+    state["signal_cooldowns"][asset] = time.time()
+    save_state(state)
