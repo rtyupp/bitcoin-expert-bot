@@ -7,7 +7,8 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 from ta.trend import EMAIndicator, MACD, ADXIndicator
-from ta.volatility import AverageTrueRange, DonchianChannel
+from ta.volatility import AverageTrueRange, DonchianChannel, BollingerBands
+from ta.momentum import RSIIndicator
 
 import config
 
@@ -241,9 +242,88 @@ def scan_macd_ema200(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSignal]:
     return signals
 
 
+def scan_bb_rsi_reversion(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSignal]:
+    signals: List[AssetSignal] = []
+    if len(df_4h) < 50:
+        return signals
+
+    c = df_4h["close"].astype(float)
+    h = df_4h["high"].astype(float)
+    l = df_4h["low"].astype(float)
+
+    bb = BollingerBands(c, 20, 2.5)
+    bb_upper = bb.bollinger_hband()
+    bb_lower = bb.bollinger_lband()
+    rsi_series = RSIIndicator(c, 14).rsi()
+    adx_series = compute_adx(df_4h, 14)
+    atr = compute_atr(df_4h, 14)
+    regime, metrics = detect_regime(df_4h)
+
+    i = -2
+    close = c.iloc[i]
+    high = h.iloc[i]
+    low = l.iloc[i]
+    atr_v = atr.iloc[i]
+    rsi_v = rsi_series.iloc[i]
+    adx_v = adx_series.iloc[i]
+    bb_u = bb_upper.iloc[i]
+    bb_l = bb_lower.iloc[i]
+
+    if np.isnan(atr_v) or atr_v <= 0 or np.isnan(rsi_v) or np.isnan(adx_v) or adx_v >= 30:
+        return signals
+
+    rr = asset_cfg["rr"]
+    stop_mult = asset_cfg["stop_mult"]
+    decimals = asset_cfg["decimals"]
+
+    # Bullish Extreme Reversion: low pierced lower BB 2.5, closed back inside, RSI < 35
+    if low <= bb_l and close > bb_l and rsi_v < 35:
+        entry = close
+        stop = entry - stop_mult * atr_v
+        target = entry + rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="bb_rsi_reversion",
+            side=1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"Bollinger Extreme Bounce: Low touched {bb_l:.2f} and closed at {close:.2f}",
+                f"RSI Oversold Rebound: RSI={rsi_v:.1f} (<35)",
+                f"Non-trending Filter: ADX={adx_v:.1f} (<30)",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "rsi": round(float(rsi_v), 1), "adx": round(float(adx_v), 1)}
+        ))
+    # Bearish Extreme Reversion: high pierced upper BB 2.5, closed back inside, RSI > 65
+    elif high >= bb_u and close < bb_u and rsi_v > 65:
+        entry = close
+        stop = entry + stop_mult * atr_v
+        target = entry - rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="bb_rsi_reversion",
+            side=-1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df_4h["ts"].iloc[i]),
+            reasons=[
+                f"Bollinger Extreme Rejection: High touched {bb_u:.2f} and closed at {close:.2f}",
+                f"RSI Overbought Reversal: RSI={rsi_v:.1f} (>65)",
+                f"Non-trending Filter: ADX={adx_v:.1f} (<30)",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "rsi": round(float(rsi_v), 1), "adx": round(float(adx_v), 1)}
+        ))
+
+    return signals
+
+
 STRATEGY_SCANNERS = {
     "donchian20_vol15": scan_donchian20_vol15,
     "macd_ema200": scan_macd_ema200,
+    "bb_rsi_reversion": scan_bb_rsi_reversion,
 }
 
 
@@ -265,6 +345,10 @@ def calculate_position_size(asset: str, entry_price: float, stop_loss_price: flo
         return max(min_size, round(raw_size, 2))
     elif asset == "SILVER":
         return max(min_size, round(raw_size, 1))
+    elif asset == "BTCUSD":
+        return max(min_size, round(raw_size, 4))
+    elif asset == "ETHUSD":
+        return max(min_size, round(raw_size, 3))
     return max(min_size, round(raw_size, 2))
 
 
@@ -310,6 +394,14 @@ def get_asset_summary(df_4h: pd.DataFrame, asset_cfg: dict) -> dict:
             "signal": round(float(s_line.iloc[-1]), 5),
             "histogram": round(float(hist.iloc[-1]), 5),
             "ema200": round(float(e200), decimals),
+        }
+    elif asset_cfg["strategy"] == "bb_rsi_reversion":
+        bb = BollingerBands(df_4h["close"].astype(float), 20, 2.5)
+        rsi_series = RSIIndicator(df_4h["close"].astype(float), 14).rsi()
+        extra = {
+            "bb_upper": round(float(bb.bollinger_hband().iloc[-1]), decimals),
+            "bb_lower": round(float(bb.bollinger_lband().iloc[-1]), decimals),
+            "rsi": round(float(rsi_series.iloc[-1]), 1),
         }
 
     return {
