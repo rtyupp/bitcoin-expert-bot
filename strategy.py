@@ -332,11 +332,12 @@ STRATEGY_SCANNERS = {
 }
 
 
-def calculate_position_size(asset: str, entry_price: float, stop_loss_price: float, risk_pct: float = 1.0) -> float:
+def calculate_position_size(asset: str, entry_price: float, stop_loss_price: float, risk_pct: float = 8.0) -> float:
     from capital import client
     acc = client.account_summary()
     available_balance = float(acc.get("available") or 1000.0)
-    risk_amount = available_balance * (risk_pct / 100.0)
+    # Small account dynamic scaling: minimum $2.00 risk to prevent micro-penny trading
+    risk_amount = max(2.0, available_balance * (risk_pct / 100.0))
     stop_distance = abs(entry_price - stop_loss_price)
     min_size = config.ASSETS[asset]["min_deal"]
 
@@ -346,7 +347,7 @@ def calculate_position_size(asset: str, entry_price: float, stop_loss_price: flo
     raw_size = risk_amount / stop_distance
     if asset in ("GBPUSD",):
         return max(min_size, round(raw_size, 0))
-    elif asset == "GOLD":
+    elif asset in ("GOLD", "US500"):
         return max(min_size, round(raw_size, 2))
     elif asset == "SILVER":
         return max(min_size, round(raw_size, 1))

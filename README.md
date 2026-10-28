@@ -1,4 +1,4 @@
-# Multi-Asset Institutional Bot (GBP/USD, Gold, Silver, BTC, ETH)
+# Multi-Asset Institutional Bot (GBP/USD, Gold, Silver, BTC, ETH, US500)
 
 بوت تداول ومراقبة آلي مؤسسي متعدد الأصول تم بناؤه والتحقق منه بناءً على باكتست شامل ودقيق على بيانات وسبريد ورسوم تمويل Capital.com.
 
@@ -11,7 +11,8 @@
 | **GBP/USD** | Donchian 20 + Vol 1.5x | **4H** | **3.0 : 1** | **72.7%** | **4.20** | **+0.88 R** |
 | **Gold (GOLD)** | MACD Cross + EMA200 Macro | **4H** | **2.0 : 1** | **65.0%** | **2.49** | **+0.52 R** |
 | **Silver (SILVER)** | MACD Cross + EMA200 Macro | **4H** | **2.0 : 1** | **60.0%** | **2.76** | **+0.56 R** |
-| **Bitcoin (BTCUSD)** | Bollinger 2.5 + RSI Reversion | **4H** | **2.0 : 1** | **50.0%** | **4.00** | **+0.75 R** |
+| **S&P 500 (US500)** | MACD Cross + EMA200 Macro | **1H** | **2.5 : 1** | **50.0%** | **2.50** | **+0.75 R** |
+| **Bitcoin (BTCUSD)** | Bollinger 2.5 + RSI Reversion | **4H** | **2.0 : 1** | **54.5%** | **4.00** | **+0.82 R** |
 | **Ethereum (ETHUSD)** | Bollinger 2.5 + RSI Reversion | **4H** | **2.0 : 1** | **42.9%** | **2.25** | **+0.45 R** |
 
 ---

@@ -29,7 +29,7 @@ CAPITAL_ENV = os.environ.get("CAPITAL_ENV", "demo").lower()  # demo | live
 CAPITAL_AUTO_TRADE = os.environ.get("CAPITAL_AUTO_TRADE", "0") == "1"
 
 # Risk & Strategy Settings
-DEFAULT_RISK_PCT = float(os.environ.get("DEFAULT_RISK_PCT", "1.0"))
+DEFAULT_RISK_PCT = float(os.environ.get("DEFAULT_RISK_PCT", "8.0"))
 MAX_OPEN_POSITIONS = int(os.environ.get("MAX_OPEN_POSITIONS", "3"))
 SIGNAL_INTERVAL_SEC = int(os.environ.get("SIGNAL_INTERVAL_SEC", "300"))
 SIGNAL_COOLDOWN_MIN = int(os.environ.get("SIGNAL_COOLDOWN_MIN", "240"))
@@ -109,6 +109,21 @@ ASSETS = {
         "min_deal": 0.001,
         "margin_pct": 0.50,
         "spread": 2.0,
+        "volume_mult": 0.0,
+        "decimals": 2,
+    },
+    "US500": {
+        "name": "S&P 500",
+        "epic": "US500",
+        "asset_class": "INDEX",
+        "timeframe": "1h",
+        "resolution": "HOUR",
+        "strategy": "macd_ema200",
+        "rr": 2.5,
+        "stop_mult": 1.5,
+        "min_deal": 0.01,
+        "margin_pct": 0.05,
+        "spread": 0.4,
         "volume_mult": 0.0,
         "decimals": 2,
     },
