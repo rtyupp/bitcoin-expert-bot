@@ -257,6 +257,7 @@ def scan_bb_rsi_reversion(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSig
     rsi_series = RSIIndicator(c, 14).rsi()
     adx_series = compute_adx(df_4h, 14)
     atr = compute_atr(df_4h, 14)
+    atr_p90 = atr.rolling(100).quantile(0.90)
     regime, metrics = detect_regime(df_4h)
 
     i = -2
@@ -264,12 +265,16 @@ def scan_bb_rsi_reversion(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSig
     high = h.iloc[i]
     low = l.iloc[i]
     atr_v = atr.iloc[i]
+    atr_cap = atr_p90.iloc[i]
     rsi_v = rsi_series.iloc[i]
     adx_v = adx_series.iloc[i]
     bb_u = bb_upper.iloc[i]
     bb_l = bb_lower.iloc[i]
 
+    # Hummingbot risk rule: ignore entries during extreme volatility spikes (>90th percentile ATR)
     if np.isnan(atr_v) or atr_v <= 0 or np.isnan(rsi_v) or np.isnan(adx_v) or adx_v >= 30:
+        return signals
+    if not np.isnan(atr_cap) and atr_v > atr_cap:
         return signals
 
     rr = asset_cfg["rr"]
