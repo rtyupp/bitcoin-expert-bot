@@ -325,10 +325,93 @@ def scan_bb_rsi_reversion(df_4h: pd.DataFrame, asset_cfg: dict) -> List[AssetSig
     return signals
 
 
+def scan_smc_liquidity_sweep(df: pd.DataFrame, asset_cfg: dict) -> List[AssetSignal]:
+    signals: List[AssetSignal] = []
+    if len(df) < 50:
+        return signals
+
+    c = df["close"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    o = df["open"].astype(float)
+
+    atr = compute_atr(df, 14)
+    ema200 = compute_ema(df, 200)
+    er = compute_er(df, 16)
+    regime, metrics = detect_regime(df)
+
+    # 20-candle lookback for key high/low liquidity levels
+    hi20 = h.rolling(20).max().shift(2)
+    lo20 = l.rolling(20).min().shift(2)
+
+    i = -2
+    prev_h = h.iloc[i-1]
+    prev_l = l.iloc[i-1]
+    prev_c = c.iloc[i-1]
+    prev_o = o.iloc[i-1]
+    cur_c = c.iloc[i]
+    atr_v = atr.iloc[i]
+    e200_v = ema200.iloc[i]
+    er_v = er.iloc[i]
+    hi_lvl = hi20.iloc[i]
+    lo_lvl = lo20.iloc[i]
+
+    if np.isnan(atr_v) or atr_v <= 0 or np.isnan(e200_v) or np.isnan(er_v) or er_v < 0.20:
+        return signals
+
+    rr = asset_cfg["rr"]
+    stop_mult = asset_cfg["stop_mult"]
+    decimals = asset_cfg["decimals"]
+
+    # Bullish SMC Sweep: Previous candle swept below 20-bar low and closed green; current candle breaks confirmation high
+    if prev_l < lo_lvl and prev_c > prev_o and cur_c > prev_h and cur_c > e200_v:
+        entry = cur_c
+        stop = entry - stop_mult * atr_v
+        target = entry + rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="smc_liquidity_sweep",
+            side=1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df["ts"].iloc[i]),
+            reasons=[
+                f"SMC Liquidity Sweep Bullish: Swept 20-bar low {lo_lvl:.2f}",
+                f"Retest Confirmation: Close {cur_c:.2f} > Prev High {prev_h:.2f}",
+                f"Macro Filter: Close > EMA200 ({e200_v:.2f})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "er": round(float(er_v), 3)}
+        ))
+    # Bearish SMC Sweep: Previous candle swept above 20-bar high and closed red; current candle breaks confirmation low
+    elif prev_h > hi_lvl and prev_c < prev_o and cur_c < prev_l and cur_c < e200_v:
+        entry = cur_c
+        stop = entry + stop_mult * atr_v
+        target = entry - rr * stop_mult * atr_v
+        signals.append(AssetSignal(
+            asset=asset_cfg["epic"],
+            spec_id="smc_liquidity_sweep",
+            side=-1,
+            price=round(entry, decimals),
+            stop_level=round(stop, decimals),
+            target_level=round(target, decimals),
+            time=str(df["ts"].iloc[i]),
+            reasons=[
+                f"SMC Liquidity Sweep Bearish: Swept 20-bar high {hi_lvl:.2f}",
+                f"Retest Confirmation: Close {cur_c:.2f} < Prev Low {prev_l:.2f}",
+                f"Macro Filter: Close < EMA200 ({e200_v:.2f})",
+            ],
+            meta={**metrics, "atr": round(float(atr_v), decimals), "er": round(float(er_v), 3)}
+        ))
+
+    return signals
+
+
 STRATEGY_SCANNERS = {
     "donchian20_vol15": scan_donchian20_vol15,
     "macd_ema200": scan_macd_ema200,
     "bb_rsi_reversion": scan_bb_rsi_reversion,
+    "smc_liquidity_sweep": scan_smc_liquidity_sweep,
 }
 
 
