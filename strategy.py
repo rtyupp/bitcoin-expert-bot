@@ -492,6 +492,15 @@ def get_asset_summary(df_4h: pd.DataFrame, asset_cfg: dict) -> dict:
             "bb_lower": round(float(bb.bollinger_lband().iloc[-1]), decimals),
             "rsi": round(float(rsi_series.iloc[-1]), 1),
         }
+    elif asset_cfg["strategy"] == "smc_liquidity_sweep":
+        hi20 = df_4h["high"].astype(float).rolling(20).max().iloc[-1]
+        lo20 = df_4h["low"].astype(float).rolling(20).min().iloc[-1]
+        e200 = compute_ema(df_4h, 200).iloc[-1]
+        extra = {
+            "hi20": round(float(hi20), decimals),
+            "lo20": round(float(lo20), decimals),
+            "ema200": round(float(e200), decimals),
+        }
 
     return {
         "asset": asset_cfg["name"],

@@ -22,9 +22,10 @@ for a, cfg in config.ASSETS.items():
 
 # 4. Fetch OHLCV & Strategy Summary
 for a, cfg in config.ASSETS.items():
-    df = capital.client.fetch_ohlcv(cfg['epic'], '4h', 80)
+    tf = cfg.get('timeframe', '4h')
+    df = capital.client.fetch_ohlcv(cfg['epic'], tf, 80)
     summary = strategy.get_asset_summary(df, cfg)
-    print(f"  {a} (4H): Close {summary.get('price')} | Regime {summary.get('regime')} | ATR {summary.get('atr')}")
+    print(f"  {a} ({tf.upper()}): Close {summary.get('price')} | Regime {summary.get('regime')} | ATR {summary.get('atr')}")
     
     # Render chart
     img = charts.render_asset_chart(a, df, summary)

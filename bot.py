@@ -63,18 +63,28 @@ def send_photo(chat_id: int | str, photo_bytes: bytes, caption: str, reply_marku
 def main_keyboard(is_admin: bool = False) -> dict:
     rows = [
         [
-            {"text": "📊 تحليل GBP/USD", "callback_data": "cmd_analysis_GBPUSD"},
-            {"text": "🥇 تحليل Gold", "callback_data": "cmd_analysis_GOLD"},
-            {"text": "🥈 تحليل Silver", "callback_data": "cmd_analysis_SILVER"},
+            {"text": "📊 GBP/USD", "callback_data": "cmd_analysis_GBPUSD"},
+            {"text": "🥇 Gold", "callback_data": "cmd_analysis_GOLD"},
+            {"text": "🥈 Silver", "callback_data": "cmd_analysis_SILVER"},
+        ],
+        [
+            {"text": "₿ Bitcoin", "callback_data": "cmd_analysis_BTCUSD"},
+            {"text": "Ξ Ethereum", "callback_data": "cmd_analysis_ETHUSD"},
+            {"text": "🇺🇸 US500", "callback_data": "cmd_analysis_US500"},
         ],
         [
             {"text": "🎯 الصفقات النشطة", "callback_data": "cmd_signals"},
             {"text": "💼 حساب Capital", "callback_data": "cmd_capital"},
         ],
         [
-            {"text": "📈 شارت GBP/USD", "callback_data": "cmd_chart_GBPUSD"},
+            {"text": "📈 شارت GBPUSD", "callback_data": "cmd_chart_GBPUSD"},
             {"text": "📈 شارت Gold", "callback_data": "cmd_chart_GOLD"},
             {"text": "📈 شارت Silver", "callback_data": "cmd_chart_SILVER"},
+        ],
+        [
+            {"text": "📈 شارت BTC", "callback_data": "cmd_chart_BTCUSD"},
+            {"text": "📈 شارت ETH", "callback_data": "cmd_chart_ETHUSD"},
+            {"text": "📈 شارت US500", "callback_data": "cmd_chart_US500"},
         ],
     ]
     if is_admin:
@@ -109,9 +119,10 @@ def format_asset_summary(summary: dict) -> str:
     }
     regime_ar = regime_map.get(regime, regime)
     decimals = config.ASSETS[epic]["decimals"]
+    tf = config.ASSETS[epic].get("timeframe", "4h").upper()
 
     lines = [
-        f"🏛 <b>{asset} ({epic}) — إطار 4H</b>",
+        f"🏛 <b>{asset} ({epic}) — إطار {tf}</b>",
         "━━━━━━━━━━━━━━━━━━",
         f"💵 <b>السعر اللحظي:</b> <code>{price:,.{decimals}f}</code>",
         f"🧭 <b>حالة السوق:</b> {regime_ar}",
@@ -133,6 +144,20 @@ def format_asset_summary(summary: dict) -> str:
             f"  • خط MACD: <code>{summary.get('macd', 0):.5f}</code>",
             f"  • خط الإشارة: <code>{summary.get('signal', 0):.5f}</code>",
             f"  • الهيستوغرام: <code>{summary.get('histogram', 0):.5f}</code>",
+            f"  • متوسط EMA200: <code>{summary.get('ema200', 0):,.{decimals}f}</code>",
+        ])
+    elif strat == "bb_rsi_reversion":
+        lines.extend([
+            f"📈 <b>مؤشر البولينجر والارتداد (BB 2.5 + RSI):</b>",
+            f"  • الحد العلوي: <code>{summary.get('bb_upper', 0):,.{decimals}f}</code>",
+            f"  • الحد السفلي: <code>{summary.get('bb_lower', 0):,.{decimals}f}</code>",
+            f"  • مؤشر RSI(14): <code>{summary.get('rsi', 0):.1f}</code>",
+        ])
+    elif strat == "smc_liquidity_sweep":
+        lines.extend([
+            f"📈 <b>سحب السيولة المؤسسي (SMC 20-Bar Sweep):</b>",
+            f"  • قمة السيولة (20 شمعة): <code>{summary.get('hi20', 0):,.{decimals}f}</code>",
+            f"  • قاع السيولة (20 شمعة): <code>{summary.get('lo20', 0):,.{decimals}f}</code>",
             f"  • متوسط EMA200: <code>{summary.get('ema200', 0):,.{decimals}f}</code>",
         ])
 
@@ -208,11 +233,14 @@ def handle_message(msg: dict, st: dict) -> None:
         intro = (
             "🏛 <b>بوت التداول والمضاربة المؤسسي متعدد الأصول</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "نظام تم تصميمه بناءً على نتائج الباكتست الحقيقي على حساب Capital.com:\n\n"
-            "1️⃣ <b>GBP/USD [4H]:</b> كسر دونشيان 20 مع تأكيد الحجم (PF 4.20 | Win 73%)\n"
-            "2️⃣ <b>Gold الذهب [4H]:</b> تقاطع MACD مع فلتر ترند EMA200 (PF 2.49 | Win 65%)\n"
-            "3️⃣ <b>Silver الفضة [4H]:</b> تقاطع MACD مع فلتر ترند EMA200 (PF 2.76 | Win 60%)\n\n"
-            "⚡ <b>ميزات الأمان:</b> تأمين الوقف التلقائي عند +1.0R، وخروج Chandelier/ATR.\n"
+            "نظام متكامل مبني على نتائج الباكتست الحقيقي على حساب Capital.com:\n\n"
+            "1️⃣ <b>GBP/USD [4H]:</b> كسر دونشيان 20 + الحجم (PF 4.20 | Win 73%)\n"
+            "2️⃣ <b>Gold الذهب [4H]:</b> تقاطع MACD + EMA200 (PF 2.49 | Win 65%)\n"
+            "3️⃣ <b>Silver الفضة [4H]:</b> تقاطع MACD + EMA200 (PF 2.76 | Win 60%)\n"
+            "4️⃣ <b>US500 إس آند بي [1H]:</b> سحب السيولة SMC Sweep (PF 5.00 | Win 67%)\n"
+            "5️⃣ <b>Bitcoin بيتكوين [4H]:</b> ارتداد بولينجر 2.5 + RSI (PF 4.00 | Win 55%)\n"
+            "6️⃣ <b>Ethereum إيثيريوم [4H]:</b> ارتداد بولينجر 2.5 + RSI (PF 2.25 | Win 43%)\n\n"
+            "⚡ <b>ميزات الأمان:</b> تأمين الوقف التلقائي عند +1.0R، وتحجيم مركب ذكي.\n"
             "اختر من الأزرار التفاعلية بالأسفل 👇"
         )
         send_message(chat_id, intro, reply_markup=main_keyboard(is_admin))
@@ -221,11 +249,12 @@ def handle_message(msg: dict, st: dict) -> None:
         parts = text.split()
         asset = parts[1].upper() if len(parts) > 1 else "GBPUSD"
         if asset not in config.ASSETS:
-            send_message(chat_id, "الأصول المتاحة: GBPUSD, GOLD, SILVER")
+            send_message(chat_id, f"الأصول المتاحة: {', '.join(config.ASSETS.keys())}")
             return
         try:
             cfg = config.ASSETS[asset]
-            df = capital.client.fetch_ohlcv(cfg["epic"], "4h", 300)
+            tf = cfg.get("timeframe", "4h")
+            df = capital.client.fetch_ohlcv(cfg["epic"], tf, 300)
             summary = strategy.get_asset_summary(df, cfg)
             send_message(chat_id, format_asset_summary(summary))
         except Exception as e:
@@ -254,14 +283,15 @@ def handle_message(msg: dict, st: dict) -> None:
         parts = text.split()
         asset = parts[1].upper() if len(parts) > 1 else "GBPUSD"
         if asset not in config.ASSETS:
-            send_message(chat_id, "الأصول المتاحة للشارت: GBPUSD, GOLD, SILVER")
+            send_message(chat_id, f"الأصول المتاحة للشارت: {', '.join(config.ASSETS.keys())}")
             return
         try:
             cfg = config.ASSETS[asset]
-            df = capital.client.fetch_ohlcv(cfg["epic"], "4h", 80)
+            tf = cfg.get("timeframe", "4h")
+            df = capital.client.fetch_ohlcv(cfg["epic"], tf, 80)
             summary = strategy.get_asset_summary(df, cfg)
             chart_bytes = charts.render_asset_chart(asset, df, summary)
-            caption = f"📈 <b>شارت {cfg['name']} (4H)</b>\nالسعر: <code>{summary.get('price')}</code> | النظام: {summary.get('regime')}"
+            caption = f"📈 <b>شارت {cfg['name']} ({tf.upper()})</b>\nالسعر: <code>{summary.get('price')}</code> | النظام: {summary.get('regime')}"
             send_photo(chat_id, chart_bytes, caption)
         except Exception as e:
             send_message(chat_id, f"❌ خطأ أثناء توليد الشارت: {e}")
@@ -329,8 +359,9 @@ def handle_message(msg: dict, st: dict) -> None:
 
         try:
             for ak, cfg in config.ASSETS.items():
-                df = capital.client.fetch_ohlcv(cfg["epic"], "4h", 50)
-                lines.append(f"✅ شموع {ak} (4H): {len(df)} شمعة")
+                tf = cfg.get("timeframe", "4h")
+                df = capital.client.fetch_ohlcv(cfg["epic"], tf, 50)
+                lines.append(f"✅ شموع {ak} ({tf.upper()}): {len(df)} شمعة")
         except Exception as e:
             lines.append(f"❌ الشموع التاريخية: {e}")
 
@@ -374,11 +405,17 @@ def handle_callback(cb: dict, st: dict) -> None:
         "cmd_analysis_GBPUSD": "/analysis GBPUSD",
         "cmd_analysis_GOLD": "/analysis GOLD",
         "cmd_analysis_SILVER": "/analysis SILVER",
+        "cmd_analysis_BTCUSD": "/analysis BTCUSD",
+        "cmd_analysis_ETHUSD": "/analysis ETHUSD",
+        "cmd_analysis_US500": "/analysis US500",
         "cmd_signals": "/signals",
         "cmd_capital": "/capital",
         "cmd_chart_GBPUSD": "/chart GBPUSD",
         "cmd_chart_GOLD": "/chart GOLD",
         "cmd_chart_SILVER": "/chart SILVER",
+        "cmd_chart_BTCUSD": "/chart BTCUSD",
+        "cmd_chart_ETHUSD": "/chart ETHUSD",
+        "cmd_chart_US500": "/chart US500",
         "cmd_autotrade": "/autotrade",
         "cmd_selftest": "/selftest",
         "cmd_help": "/help",
@@ -433,10 +470,11 @@ def signal_watcher_loop(st: dict) -> None:
                         send_message(target_chat, msg)
 
                         try:
-                            df = capital.client.fetch_ohlcv(asset_cfg["epic"], "4h", 80)
+                            tf = asset_cfg.get("timeframe", "4h")
+                            df = capital.client.fetch_ohlcv(asset_cfg["epic"], tf, 80)
                             summary = strategy.get_asset_summary(df, asset_cfg)
                             chart_bytes = charts.render_asset_chart(asset_key, df, summary)
-                            send_photo(target_chat, chart_bytes, f"📊 <b>شارت دخول {asset_cfg['name']} (4H)</b>")
+                            send_photo(target_chat, chart_bytes, f"📊 <b>شارت دخول {asset_cfg['name']} ({tf.upper()})</b>")
                         except Exception as ce:
                             log.warning("Chart send on signal failed: %s", ce)
 

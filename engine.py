@@ -61,10 +61,11 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
     data_frames = {}
     for asset_key, asset_cfg in config.ASSETS.items():
         epic = asset_cfg["epic"]
+        tf = asset_cfg.get("timeframe", "4h")
         try:
-            df = client.fetch_ohlcv(epic, timeframe="4h", limit=300)
+            df = client.fetch_ohlcv(epic, timeframe=tf, limit=300)
             data_frames[asset_key] = df
-            logs.append(f"Fetched {len(df)} 4H candles for {asset_cfg['name']} ({epic})")
+            logs.append(f"Fetched {len(df)} {tf.upper()} candles for {asset_cfg['name']} ({epic})")
         except Exception as e:
             logs.append(f"Failed to fetch {asset_key}: {e}")
 
@@ -78,26 +79,27 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
     active = state.get_active_trades(current_state)
 
     # 1. Manage Active Positions
-    for spec_id, tr_info in list(active.items()):
+    for trade_key, tr_info in list(active.items()):
         if tr_info.get("closed"):
             continue
 
-        asset = tr_info.get("asset") or spec_id.split("_")[0]
+        asset = tr_info.get("asset") or trade_key.split("_")[0]
+        spec_id = tr_info.get("spec_id") or trade_key
         actx = ctx.get(asset)
         if not actx:
             continue
 
         deal_id = tr_info.get("deal_id")
         if deal_id and deal_id not in open_deal_ids:
-            closed = state.close_trade(current_state, spec_id, reason="Closed on broker (TP/SL hit)")
+            closed = state.close_trade(current_state, trade_key, reason="Closed on broker (TP/SL hit)")
             if closed:
-                logs.append(f"Position {spec_id} closed on broker — PnL: ${closed.get('pnl', 0):+.2f}")
+                logs.append(f"Position {trade_key} closed on broker — PnL: ${closed.get('pnl', 0):+.2f}")
                 actions_taken.append({"event": "close", **closed})
             continue
 
         pos = open_deal_ids.get(deal_id, {}) if deal_id else {}
-        entry = float(tr_info.get("level") or 0.0)
-        stop = float(tr_info.get("stop_level") or 0.0)
+        entry = float(tr_info.get("level") or tr_info.get("entry") or 0.0)
+        stop = float(tr_info.get("stop_level") or tr_info.get("stopLevel") or 0.0)
         side = 1 if tr_info["direction"] == "BUY" else -1
         initial_risk = abs(entry - stop)
         entry_candle = str(tr_info.get("entry_candle") or "")
@@ -108,7 +110,7 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
         if stored_peak is not None:
             peak = max(peak, float(stored_peak)) if side == 1 else min(peak, float(stored_peak))
         if stored_peak is None or peak != float(stored_peak):
-            state.update_trade(current_state, spec_id, peak=peak)
+            state.update_trade(current_state, trade_key, peak=peak)
 
         exit_reason = None if same_candle else strategy.check_exit(
             asset, spec_id, side, entry, stop, peak, actx["close"], actx["atr"], entry_candle, actx["last_time"]
@@ -118,20 +120,20 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
             ok_close, msg_close = client.close_position(deal_id)
             if ok_close:
                 pnl = float(pos.get("upl", 0.0))
-                closed = state.close_trade(current_state, spec_id, reason=exit_reason, exit_price=actx["close"], pnl=pnl)
+                closed = state.close_trade(current_state, trade_key, reason=exit_reason, exit_price=actx["close"], pnl=pnl)
                 actions_taken.append({
                     "event": "close",
                     "spec_id": spec_id,
-                    "strat_name": tr_info.get("strat_name", spec_id),
+                    "strat_name": tr_info.get("strat_name", trade_key),
                     "direction": tr_info["direction"],
                     "entry": entry,
                     "exit_price": actx["close"],
                     "reason": exit_reason,
                     "pnl": pnl,
                 })
-                logs.append(f"Auto-exit triggered [{spec_id}] — {exit_reason} | PnL ${pnl:+.2f}")
+                logs.append(f"Auto-exit triggered [{trade_key}] — {exit_reason} | PnL ${pnl:+.2f}")
             else:
-                logs.append(f"Failed to close [{spec_id}]: {msg_close}")
+                logs.append(f"Failed to close [{trade_key}]: {msg_close}")
             continue
 
         # Break-Even check (+1.0R)
@@ -140,17 +142,31 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
             if bar_gain >= 1.0 * initial_risk:
                 ok_up, _ = client.update_position(deal_id, stop_level=entry)
                 if ok_up:
-                    state.update_trade(current_state, spec_id, moved_be=True, stop_level=entry)
-                    logs.append(f"Break-even secured for [{spec_id}] at entry ${entry:,.5f}")
+                    state.update_trade(current_state, trade_key, moved_be=True, stop_level=entry)
+                    logs.append(f"Break-even secured for [{trade_key}] at entry ${entry:,.5f}")
+
+    # Refresh active open count
+    active_open_assets = {
+        k for k, v in state.get_active_trades(current_state).items() if not v.get("closed")
+    } | {p.get("epic") for p in open_positions if p.get("epic")}
 
     # 2. Scan for New Signals
     for asset_key, asset_cfg in config.ASSETS.items():
         spec_id = asset_cfg["strategy"]
-        if spec_id in active and not active[spec_id].get("closed"):
+        if asset_key in active_open_assets:
+            continue
+        if len(active_open_assets) >= config.MAX_OPEN_POSITIONS:
+            logs.append(f"Max open positions ({config.MAX_OPEN_POSITIONS}) reached; skipping {asset_key}")
+            continue
+        if not state.check_signal_cooldown(current_state, asset_key, config.SIGNAL_COOLDOWN_MIN):
             continue
 
         df = data_frames.get(asset_key)
-        if df is None:
+        if df is None or len(df) < 3:
+            continue
+
+        last_closed_ts = str(df["ts"].iloc[-2])
+        if state.get_last_signal_candle(current_state, asset_key) == last_closed_ts:
             continue
 
         scanner = strategy.STRATEGY_SCANNERS.get(spec_id)
@@ -161,7 +177,7 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
 
             trade_record = {
                 "spec_id": sig.spec_id,
-                "strat_name": sig.spec_id,
+                "strat_name": f"{asset_key}_{sig.spec_id}",
                 "direction": direction,
                 "entry": sig.price,
                 "stop_level": sig.stop_level,
@@ -187,21 +203,23 @@ def evaluate_and_trade(st: dict | None = None) -> Tuple[List[Dict[str, Any]], Li
                     actx = ctx.get(asset_key)
                     full_record = {
                         **deal_data,
-                        "strat_name": sig.spec_id,
+                        "spec_id": sig.spec_id,
+                        "strat_name": f"{asset_key}_{sig.spec_id}",
                         "asset": asset_key,
                         "entry_candle": actx["last_time"] if actx else "",
                         "peak": (actx["high"] if sig.side == 1 else actx["low"]) if actx else sig.price,
                     }
-                    state.record_trade(current_state, sig.spec_id, full_record)
+                    state.record_trade(current_state, asset_key, full_record)
+                    active_open_assets.add(asset_key)
                     trade_record["deal_id"] = deal_id
                     actions_taken.append(trade_record)
-                    logs.append(f"Executed trade [{sig.spec_id}] on {asset_cfg['name']} size {size}")
-                    state.set_signal_cooldown(current_state, asset_key)
+                    logs.append(f"Executed trade [{asset_key}:{sig.spec_id}] on {asset_cfg['name']} size {size}")
+                    state.set_signal_cooldown(current_state, asset_key, candle_ts=last_closed_ts)
                 except Exception as e:
                     logs.append(f"Failed to open position for {asset_cfg['name']}: {e}")
             else:
                 actions_taken.append(trade_record)
-                logs.append(f"Signal generated [{sig.spec_id}] on {asset_cfg['name']} (auto-trade disabled)")
-                state.set_signal_cooldown(current_state, asset_key)
+                logs.append(f"Signal generated [{asset_key}:{sig.spec_id}] on {asset_cfg['name']} (auto-trade disabled)")
+                state.set_signal_cooldown(current_state, asset_key, candle_ts=last_closed_ts)
 
     return actions_taken, logs

@@ -18,6 +18,7 @@ def _default_state() -> dict:
         "risk_pct": config.DEFAULT_RISK_PCT,
         "active_trades": {},
         "signal_cooldowns": {},
+        "last_signal_candles": {},
     }
 
 
@@ -103,8 +104,16 @@ def check_signal_cooldown(state: dict, asset: str, cooldown_min: int) -> bool:
     return (time.time() - last_ts) >= (cooldown_min * 60)
 
 
-def set_signal_cooldown(state: dict, asset: str) -> None:
+def get_last_signal_candle(state: dict, asset: str) -> str:
+    return str(state.get("last_signal_candles", {}).get(asset, ""))
+
+
+def set_signal_cooldown(state: dict, asset: str, candle_ts: str = "") -> None:
     if "signal_cooldowns" not in state:
         state["signal_cooldowns"] = {}
     state["signal_cooldowns"][asset] = time.time()
+    if candle_ts:
+        if "last_signal_candles" not in state:
+            state["last_signal_candles"] = {}
+        state["last_signal_candles"][asset] = candle_ts
     save_state(state)
