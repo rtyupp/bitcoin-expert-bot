@@ -1,0 +1,11 @@
+{
+  "auto_trade": false,
+  "risk_pct": 8.0,
+  "active_trades": {},
+  "signal_cooldowns": {
+    "SILVER": 1793280779.6294682
+  },
+  "last_signal_candles": {
+    "SILVER": "2026-10-29 08:00:00"
+  }
+}
